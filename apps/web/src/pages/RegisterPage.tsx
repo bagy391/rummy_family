@@ -35,6 +35,7 @@ export default function RegisterPage() {
         email,
         password,
         options: {
+          emailRedirectTo: "https://rummy-family-web.vercel.app/login",
           data: {
             name,
             mobile_number: mobileNumber,
