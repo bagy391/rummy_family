@@ -92,6 +92,12 @@ interface LeaveShareVoteState {
   votes: Record<string, "agree" | "disagree" | "pending">;
 }
 
+interface PauseVoteState {
+  requesterId: string;
+  requesterName: string;
+  votes: Record<string, "agree" | "disagree" | "pending">;
+}
+
 export default function RoomPage() {
   const { roomCode } = useParams<{ roomCode: string }>();
   const navigate = useNavigate();
@@ -163,6 +169,9 @@ export default function RoomPage() {
 
   // Leave Share voting state
   const [activeLeaveShareVote, setActiveLeaveShareVote] = useState<LeaveShareVoteState | null>(null);
+
+  // Pause voting state
+  const [activePauseVote, setActivePauseVote] = useState<PauseVoteState | null>(null);
 
   // Audio & Haptic state
   const [soundOn, setSoundOn] = useState(gameAudio.isSoundEnabled());
@@ -424,6 +433,44 @@ export default function RoomPage() {
               toast.info(`Mutual quit proposal cancelled by ${voterName}`);
             } else {
               toast.error(`Mutual quit proposal rejected by ${voterName}`);
+            }
+          })
+          .on("broadcast", { event: "pause_initiated" }, (payload: any) => {
+            if (!active) return;
+            const { requesterId, requesterName, activePlayerIds } = payload.payload;
+            const initialVotes: Record<string, "agree" | "disagree" | "pending"> = {};
+            activePlayerIds.forEach((pid: string) => {
+              initialVotes[pid] = pid === requesterId ? "agree" : "pending";
+            });
+
+            setActivePauseVote({
+              requesterId,
+              requesterName,
+              votes: initialVotes
+            });
+            toast.info(`${requesterName} proposed to pause the game.`);
+          })
+          .on("broadcast", { event: "pause_vote" }, (payload: any) => {
+            if (!active) return;
+            const { voterId, vote, voterName } = payload.payload;
+            setActivePauseVote((prev) => {
+              if (!prev) return null;
+              const newVotes = { ...prev.votes, [voterId]: vote };
+              if (vote === "disagree") {
+                toast.error(`Pause proposal rejected by ${voterName}`);
+                return null;
+              }
+              return { ...prev, votes: newVotes };
+            });
+          })
+          .on("broadcast", { event: "pause_rejected" }, (payload: any) => {
+            if (!active) return;
+            const { voterName, reason } = payload.payload;
+            setActivePauseVote(null);
+            if (reason === "cancelled") {
+              toast.info(`Pause proposal cancelled by ${voterName}`);
+            } else {
+              toast.error(`Pause proposal rejected by ${voterName}`);
             }
           })
           .on("broadcast", { event: "player_kicked" }, (payload: any) => {
@@ -1168,7 +1215,7 @@ export default function RoomPage() {
           room_id: room.id,
           round_number: roundNumber,
           status: "active",
-          current_turn_player_id: activePlayers[0]?.player_id || null, // first seat player goes first
+          current_turn_player_id: activePlayers[(roundNumber - 1) % activePlayers.length]?.player_id || null, // clockwise player starts next rounds
           turn_order_index: 0,
           wild_joker: wildJokerInfo,
           draw_pile: deck, // stored on server
@@ -2004,6 +2051,31 @@ export default function RoomPage() {
         }
       }
 
+      // Check if room has only 1 active player left after this player quit
+      const remainingActiveRoomPlayers = players.filter(
+        p => p.player_id !== user?.id && (p.status === "active" || p.status === "disconnected")
+      );
+
+      if (remainingActiveRoomPlayers.length <= 1) {
+        // Complete the game
+        await supabase
+          .from("rooms")
+          .update({ status: "finished" })
+          .eq("id", room.id);
+
+        const winner = remainingActiveRoomPlayers[0];
+        if (winner) {
+          const winnerId = winner.player_id;
+          await generateBetPayments(winnerId);
+
+          const finalScoresMap: Record<string, number> = {};
+          for (const p of players) {
+            finalScoresMap[p.player_id] = p.total_score;
+          }
+          await updateGameFinishedStats([winnerId], finalScoresMap);
+        }
+      }
+
       toast.success("You quit the game");
       navigate("/dashboard");
     } catch (err: any) {
@@ -2029,12 +2101,38 @@ export default function RoomPage() {
     return activeRoundPlayers[nextIdx]?.player_id || "";
   };
 
-  const handleCopyCode = () => {
+  const handleCopyCode = async () => {
     if (!roomCode) return;
-    navigator.clipboard.writeText(roomCode);
-    setCopied(true);
-    toast.success("Room code copied to clipboard!");
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(roomCode);
+        setCopied(true);
+        toast.success("Room code copied to clipboard!");
+      } else {
+        // Fallback for non-secure contexts (e.g. HTTP, local network IPs)
+        const textArea = document.createElement("textarea");
+        textArea.value = roomCode;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const successful = document.execCommand("copy");
+        document.body.removeChild(textArea);
+        if (successful) {
+          setCopied(true);
+          toast.success("Room code copied to clipboard!");
+        } else {
+          throw new Error("execCommand copy returned false");
+        }
+      }
+    } catch (err) {
+      console.error("Clipboard copy failed:", err);
+      toast.error("Failed to copy room code. Please copy it manually.");
+    } finally {
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   // Helper formatting for card ranks and suits
@@ -2344,6 +2442,122 @@ export default function RoomPage() {
     }
   }, [activeLeaveShareVote, room?.id, round?.id, me?.is_admin]);
 
+  // Pause Vote Resolution Effect
+  useEffect(() => {
+    if (!activePauseVote || !room || !round) return;
+
+    const allAgreed = Object.values(activePauseVote.votes).every(v => v === "agree");
+    if (allAgreed) {
+      setActivePauseVote(null);
+      toast.success("Game paused! Redirecting to dashboard...");
+      setTimeout(() => {
+        navigate("/dashboard");
+      }, 1000);
+    }
+  }, [activePauseVote, room?.id, round?.id, navigate]);
+
+  const initiatePauseVote = async () => {
+    if (!room || !round || !user || !chatChannelRef.current) return;
+
+    if (activePauseVote) {
+      toast.error("A pause vote is already in progress.");
+      return;
+    }
+
+    const activePlayerIds = players
+      .filter(p => p.status === "active" || p.status === "disconnected")
+      .map(p => p.player_id);
+
+    if (activePlayerIds.length < 2) {
+      toast.error("At least 2 active players are required to propose a pause.");
+      return;
+    }
+
+    const payload = {
+      requesterId: user.id,
+      requesterName: me?.name || user.email || "Unknown",
+      activePlayerIds
+    };
+
+    // Broadcast the initiation
+    await chatChannelRef.current.send({
+      type: "broadcast",
+      event: "pause_initiated",
+      payload
+    });
+
+    // Update state locally
+    const initialVotes: Record<string, "agree" | "disagree" | "pending"> = {};
+    activePlayerIds.forEach((pid: string) => {
+      initialVotes[pid] = pid === user.id ? "agree" : "pending";
+    });
+
+    setActivePauseVote({
+      requesterId: user.id,
+      requesterName: me?.name || "You",
+      votes: initialVotes
+    });
+
+    toast.info("Proposed to pause game. Waiting for other active players to vote...");
+  };
+
+  const votePause = async (vote: "agree" | "disagree") => {
+    if (!user || !room || !chatChannelRef.current || !activePauseVote) return;
+
+    if (vote === "disagree") {
+      // Broadcast rejection immediately
+      await chatChannelRef.current.send({
+        type: "broadcast",
+        event: "pause_rejected",
+        payload: {
+          voterId: user.id,
+          voterName: me?.name || "Someone"
+        }
+      });
+      setActivePauseVote(null);
+      toast.info("You rejected the pause proposal.");
+    } else {
+      // Broadcast agreement
+      await chatChannelRef.current.send({
+        type: "broadcast",
+        event: "pause_vote",
+        payload: {
+          voterId: user.id,
+          vote: "agree",
+          voterName: me?.name || "Someone"
+        }
+      });
+
+      // Update locally
+      setActivePauseVote((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          votes: { ...prev.votes, [user.id]: "agree" }
+        };
+      });
+    }
+  };
+
+  const cancelPause = async () => {
+    if (!user || !room || !chatChannelRef.current || !activePauseVote) return;
+    try {
+      await chatChannelRef.current.send({
+        type: "broadcast",
+        event: "pause_rejected",
+        payload: {
+          voterId: user.id,
+          voterName: me?.name || user.email || "Proposer",
+          reason: "cancelled"
+        }
+      });
+      setActivePauseVote(null);
+      toast.info("You cancelled the pause proposal.");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const toggleSound = () => {
     const newVal = !soundOn;
     setSoundOn(newVal);
@@ -2421,8 +2635,8 @@ export default function RoomPage() {
             </div>
             <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
             <p className="text-sm text-[var(--color-text-secondary)]">
-              {!isBrowserOnline 
-                ? "Your internet connection appears to be offline. Please check your network status." 
+              {!isBrowserOnline
+                ? "Your internet connection appears to be offline. Please check your network status."
                 : "Attempting to reconnect to the game server. Please wait..."}
             </p>
             <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
@@ -2444,32 +2658,32 @@ export default function RoomPage() {
   return (
     <div className="h-dvh overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] safe-top safe-bottom flex flex-col">
       {/* Dynamic fullscreen connection loss overlay */}
-      {(!isBrowserOnline || 
-        channelStatus === "CLOSED" || 
-        channelStatus === "CHANNEL_ERROR" || 
-        channelStatus === "TIMED_OUT" || 
+      {(!isBrowserOnline ||
+        channelStatus === "CLOSED" ||
+        channelStatus === "CHANNEL_ERROR" ||
+        channelStatus === "TIMED_OUT" ||
         (hasSubscribed && channelStatus !== "SUBSCRIBED")) && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
-          <div className="max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl flex flex-col items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500">
-              <Smartphone className="w-6 h-6 animate-bounce" />
-            </div>
-            <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
-            <p className="text-sm text-[var(--color-text-secondary)]">
-              {!isBrowserOnline 
-                ? "Your internet connection appears to be offline. Please check your network status." 
-                : "Attempting to reconnect to the game server. Please wait..."}
-            </p>
-            <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-              Reconnecting
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
+            <div className="max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl flex flex-col items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500">
+                <Smartphone className="w-6 h-6 animate-bounce" />
+              </div>
+              <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
+              <p className="text-sm text-[var(--color-text-secondary)]">
+                {!isBrowserOnline
+                  ? "Your internet connection appears to be offline. Please check your network status."
+                  : "Attempting to reconnect to the game server. Please wait..."}
+              </p>
+              <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+                Reconnecting
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
       {/* 1. LOBBY STATE */}
       {room && room.status === "waiting" && (
-        <div className="flex-1 flex flex-col justify-center items-center p-4">
+        <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
           <div className="flex flex-col md:flex-row gap-6 items-stretch w-full max-w-4xl">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
@@ -2520,9 +2734,9 @@ export default function RoomPage() {
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-3">Players Waiting</h3>
                 <div className="space-y-2 mb-6 max-h-[180px] overflow-y-auto pr-1">
                   {players.map((p) => {
-                    const isPlayerOfflineInLobby = 
-                      p.player_id === user?.id 
-                        ? !isBrowserOnline 
+                    const isPlayerOfflineInLobby =
+                      p.player_id === user?.id
+                        ? !isBrowserOnline
                         : (p.status === "disconnected" || !onlinePlayerIds.includes(p.player_id));
                     return (
                       <div
@@ -2830,7 +3044,7 @@ export default function RoomPage() {
                           : (opp.status === "disconnected" || isOppOffline)
                             ? getTimeoutText(opp)
                             : (oppRp?.status === "active" ? "🎴 13" : oppRp?.status.replace("_", " ").toUpperCase() || "Spectating")
-                      }
+                        }
                       </span>
                     </div>
                   </motion.div>
@@ -2861,8 +3075,8 @@ export default function RoomPage() {
                       scale: { repeat: Infinity, duration: 2, ease: "easeInOut" }
                     } : {}}
                     className={`w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] rounded bg-[var(--gradient-card-back)] border border-white/20 shadow-lg cursor-pointer flex items-center justify-center select-none relative ${isMyTurn && !myRoundState?.has_drawn_this_turn
-                        ? "ring-2 ring-emerald-400"
-                        : "opacity-80"
+                      ? "ring-2 ring-emerald-400"
+                      : "opacity-80"
                       }`}
                   >
                     <div className="text-xl font-bold text-white/40">♣♠</div>
@@ -2904,8 +3118,8 @@ export default function RoomPage() {
                             whileTap={isTopCard && isMyTurn && !myRoundState?.has_drawn_this_turn ? { scale: 0.95 } : {}}
                             transition={{ type: "spring", stiffness: 260, damping: 20 }}
                             className={`w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] rounded bg-white border border-gray-200 text-black absolute inset-0 flex flex-col justify-between p-1.5 select-none shadow-md ${isTopCard && isMyTurn && !myRoundState?.has_drawn_this_turn
-                                ? "ring-2 ring-emerald-400 cursor-pointer"
-                                : isTopCard ? "cursor-pointer" : "pointer-events-none"
+                              ? "ring-2 ring-emerald-400 cursor-pointer"
+                              : isTopCard ? "cursor-pointer" : "pointer-events-none"
                               } ${isTopCard ? "opacity-100" : "opacity-70"}`}
                           >
                             {/* Card Corners */}
@@ -3003,8 +3217,8 @@ export default function RoomPage() {
             </div>
           ) : (
             <div className={`w-full bg-slate-900/90 backdrop-blur-md border-t px-2.5 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] landscape:pb-1.5 pt-3 landscape:pt-1.5 sm:p-3 sm:pt-4 flex flex-col z-30 transition-colors duration-300 ${isMyTurn
-                ? "border-emerald-500/40 shadow-[0_-8px_20px_rgba(16,185,129,0.15)]"
-                : "border-white/10"
+              ? "border-emerald-500/40 shadow-[0_-8px_20px_rgba(16,185,129,0.15)]"
+              : "border-white/10"
               } overflow-visible shrink-0`}>
 
 
@@ -3126,43 +3340,43 @@ export default function RoomPage() {
                           }}
                           className={`w-[clamp(64px,9.8vh,84px)] h-[clamp(96px,14vh,120px)] landscape:w-[clamp(56px,14vh,74px)] landscape:h-[clamp(80px,20vh,110px)] rounded-md bg-white border border-gray-200 text-black cursor-pointer select-none flex flex-col justify-between p-1.5 shadow-sm shrink-0 relative hand-card ${isSelected ? "ring-2 ring-emerald-500" : ""}`}
                         >
-                      {/* Top-left corner */}
-                      <div className="flex items-center gap-0.5 leading-none select-none">
-                        <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                          {cardRankName(card.rank)}
-                        </span>
-                        {card.suit !== Suit.JOKER && (
-                          <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                            {cardSuitSymbol(card.suit)}
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Center symbol */}
-                      <div className={`text-[clamp(22px,3.2vh,28px)] landscape:text-[clamp(18px,4.5vh,24px)] text-center font-bold self-center leading-none select-none ${cardSuitColor(card.suit)}`}>
-                        {cardSuitSymbol(card.suit)}
-                      </div>
-
-                      {/* Bottom corner */}
-                      <div className="flex justify-between items-end leading-none w-full mt-auto">
-                        <span className="text-[7px] text-gray-400 font-mono leading-none">
-                          {card.deckIndex === 0 ? "A" : card.deckIndex === 1 ? "B" : "C"}
-                        </span>
-                        <div className="flex items-center gap-0.5 scale-y-[-1] scale-x-[-1] leading-none">
-                          <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                            {cardRankName(card.rank)}
-                          </span>
-                          {card.suit !== Suit.JOKER && (
-                            <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                              {cardSuitSymbol(card.suit)}
+                          {/* Top-left corner */}
+                          <div className="flex items-center gap-0.5 leading-none select-none">
+                            <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
+                              {cardRankName(card.rank)}
                             </span>
-                          )}
-                        </div>
-                      </div>
-                    </Reorder.Item>
-                  );
-                })}
-              </Reorder.Group>
+                            {card.suit !== Suit.JOKER && (
+                              <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
+                                {cardSuitSymbol(card.suit)}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Center symbol */}
+                          <div className={`text-[clamp(22px,3.2vh,28px)] landscape:text-[clamp(18px,4.5vh,24px)] text-center font-bold self-center leading-none select-none ${cardSuitColor(card.suit)}`}>
+                            {cardSuitSymbol(card.suit)}
+                          </div>
+
+                          {/* Bottom corner */}
+                          <div className="flex justify-between items-end leading-none w-full mt-auto">
+                            <span className="text-[7px] text-gray-400 font-mono leading-none">
+                              {card.deckIndex === 0 ? "A" : card.deckIndex === 1 ? "B" : "C"}
+                            </span>
+                            <div className="flex items-center gap-0.5 scale-y-[-1] scale-x-[-1] leading-none">
+                              <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
+                                {cardRankName(card.rank)}
+                              </span>
+                              {card.suit !== Suit.JOKER && (
+                                <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
+                                  {cardSuitSymbol(card.suit)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </Reorder.Item>
+                      );
+                    })}
+                  </Reorder.Group>
                 </div>
               </div>
 
@@ -3379,12 +3593,85 @@ export default function RoomPage() {
               </div>
             )}
           </AnimatePresence>
+
+          {/* PAUSE VOTING MODAL */}
+          <AnimatePresence>
+            {activePauseVote && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
+                >
+                  <h3 className="text-xl font-bold font-[Outfit] text-amber-400 mb-2 flex items-center gap-2">
+                    ⏸️ Pause Game Proposed
+                  </h3>
+
+                  <p className="text-sm text-[var(--color-text-secondary)] mb-6">
+                    <span className="font-semibold text-white">{activePauseVote.requesterName}</span> has proposed to pause the game and resume it later.
+                  </p>
+
+                  <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
+                      Active Players Votes:
+                    </h4>
+                    {Object.keys(activePauseVote.votes).map((pid) => {
+                      const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
+                      const vote = activePauseVote.votes[pid];
+
+                      return (
+                        <div key={pid} className="flex items-center justify-between text-sm">
+                          <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
+                          <span className="text-xs font-semibold">
+                            {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
+                            {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
+                            {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Voting buttons */}
+                  {activePauseVote.requesterId === user?.id ? (
+                    <div className="flex flex-col items-center gap-3 w-full">
+                      <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
+                        Waiting for other players to vote...
+                      </div>
+                      <button
+                        onClick={cancelPause}
+                        className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
+                      >
+                        Cancel Proposal
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-4">
+                      <button
+                        onClick={() => votePause("disagree")}
+                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
+                      >
+                        Disagree (Play)
+                      </button>
+                      <button
+                        onClick={() => votePause("agree")}
+                        className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md transition-colors"
+                      >
+                        Agree (Pause)
+                      </button>
+                    </div>
+                  )}
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
         </div>
       )}
 
       {/* 3. SCOREBOARD / BETWEEN ROUNDS STATE */}
       {room && room.status === "active" && round && round.status === "completed" && (
-        <div className="flex-1 flex flex-col justify-center items-center p-4">
+        <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
           <motion.div
             initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
@@ -3403,8 +3690,8 @@ export default function RoomPage() {
                   <div
                     key={p.id}
                     className={`p-3.5 rounded-xl border flex justify-between items-center ${p.status === "eliminated"
-                        ? "bg-red-500/5 border-red-500/20 opacity-70"
-                        : "bg-[var(--color-bg-secondary)] border-[var(--color-border-default)]"
+                      ? "bg-red-500/5 border-red-500/20 opacity-70"
+                      : "bg-[var(--color-bg-secondary)] border-[var(--color-border-default)]"
                       }`}
                   >
                     <div>
@@ -3422,8 +3709,8 @@ export default function RoomPage() {
                       </div>
                       <div className="text-xs text-[var(--color-text-muted)] mt-1">
                         Status this round: <span className="font-mono text-emerald-400">
-                          {p.status === "eliminated" 
-                            ? "ELIMINATED" 
+                          {p.status === "eliminated"
+                            ? "ELIMINATED"
                             : rp?.status?.toUpperCase()?.replace("_", " ")}
                         </span>
                       </div>
@@ -3454,19 +3741,18 @@ export default function RoomPage() {
                 <button
                   onClick={initiateLeaveShareVote}
                   disabled={me.opted_leave_share || !!activeLeaveShareVote}
-                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${
-                    me.opted_leave_share
-                      ? "bg-sky-500/10 text-sky-400 border-sky-500/30 cursor-not-allowed"
-                      : activeLeaveShareVote
+                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${me.opted_leave_share
+                    ? "bg-sky-500/10 text-sky-400 border-sky-500/30 cursor-not-allowed"
+                    : activeLeaveShareVote
                       ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
                       : "bg-sky-600 hover:bg-sky-500 text-white border-transparent"
-                  }`}
+                    }`}
                 >
                   {me.opted_leave_share
                     ? "Leave Share Activated (Locked)"
                     : activeLeaveShareVote
-                    ? "Vote in Progress..."
-                    : "Propose Leave Share"}
+                      ? "Vote in Progress..."
+                      : "Propose Leave Share"}
                 </button>
               </div>
             )}
@@ -3483,11 +3769,10 @@ export default function RoomPage() {
                 <button
                   onClick={initiateMutualQuit}
                   disabled={!!activeQuitVote}
-                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${
-                    activeQuitVote
-                      ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
-                      : "bg-amber-600 hover:bg-amber-500 text-white border-transparent"
-                  }`}
+                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${activeQuitVote
+                    ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
+                    : "bg-amber-600 hover:bg-amber-500 text-white border-transparent"
+                    }`}
                 >
                   {activeQuitVote ? "Vote in Progress..." : "Propose Mutual Quit (Split)"}
                 </button>
@@ -3527,13 +3812,29 @@ export default function RoomPage() {
                 Waiting for host to start the next round...
               </div>
             )}
+
+            {/* Pause Game Control */}
+            {me && me.status !== "eliminated" && (
+              <div className="mt-4 border-t border-white/5 pt-4">
+                <button
+                  onClick={initiatePauseVote}
+                  disabled={!!activePauseVote}
+                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all border ${activePauseVote
+                    ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
+                    : "bg-slate-800 hover:bg-slate-700 text-white border-transparent"
+                    }`}
+                >
+                  {activePauseVote ? "Pause Vote in Progress..." : "Propose Pause Game"}
+                </button>
+              </div>
+            )}
           </motion.div>
         </div>
       )}
 
       {/* 4. GAME ENDED / PAYMENT SETTLEMENT STATE */}
       {room && room.status === "finished" && (
-        <div className="flex-1 flex flex-col justify-center items-center p-4">
+        <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -3617,8 +3918,8 @@ export default function RoomPage() {
                     <div
                       key={pay.id}
                       className={`p-3.5 rounded-xl border flex justify-between items-center bg-[var(--color-bg-secondary)] ${pay.status === "completed"
-                          ? "border-emerald-500/20 opacity-60"
-                          : "border-[var(--color-border-default)]"
+                        ? "border-emerald-500/20 opacity-60"
+                        : "border-[var(--color-border-default)]"
                         }`}
                     >
                       <div className="text-xs">
@@ -3946,8 +4247,8 @@ function ChatContent({
                 </div>
                 <div
                   className={`px-3 py-1.5 rounded-2xl max-w-[85%] text-sm break-words shadow-sm ${isMe
-                      ? "bg-emerald-600 text-white rounded-tr-none"
-                      : "bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] rounded-tl-none"
+                    ? "bg-emerald-600 text-white rounded-tr-none"
+                    : "bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] rounded-tl-none"
                     }`}
                 >
                   {msg.message}

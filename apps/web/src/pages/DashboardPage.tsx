@@ -36,6 +36,7 @@ export default function DashboardPage() {
   const [loadingJoin, setLoadingJoin] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
   const [pendingPayments, setPendingPayments] = useState<any[]>([]);
+  const [activeRooms, setActiveRooms] = useState<any[]>([]);
 
   async function fetchDashboardData() {
     if (!user) return;
@@ -88,6 +89,17 @@ export default function DashboardPage() {
         .order("joined_at", { ascending: false });
 
       if (rpData) {
+        const active = rpData
+          .filter((x: any) => x.rooms?.status === "active")
+          .map((x: any) => ({
+            roomId: x.rooms.id,
+            roomCode: x.rooms.room_code,
+            betAmount: x.rooms.bet_amount,
+            createdAt: x.rooms.created_at,
+            playerStatus: x.status,
+          }));
+        setActiveRooms(active);
+
         const finished = rpData
           .filter((x: any) => x.rooms?.status === "finished")
           .map((x: any) => ({
@@ -384,6 +396,37 @@ export default function DashboardPage() {
               UPI ID: {user?.upiId}
             </div>
           </div>
+
+          {/* Active Games (Quick Rejoin) */}
+          {activeRooms.length > 0 && (
+            <div className="p-6 rounded-2xl bg-gradient-to-br from-[var(--color-bg-card)] to-[var(--color-bg-secondary)] border border-amber-500/30 shadow-lg relative overflow-hidden">
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 opacity-10 pointer-events-none">
+                <Sparkles className="w-24 h-24 text-amber-500" />
+              </div>
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative z-10">
+                <div>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <h3 className="font-bold font-[Outfit] text-lg text-emerald-400">Active Game in Progress</h3>
+                  </div>
+                  <p className="text-[var(--color-text-secondary)] text-sm">
+                    You have an ongoing game. Rejoin now to resume playing!
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 w-full sm:w-auto">
+                  {activeRooms.map((room) => (
+                    <button
+                      key={room.roomId}
+                      onClick={() => navigate(`/room/${room.roomCode}`)}
+                      className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
+                    >
+                      <LogIn className="w-4 h-4" /> Rejoin Room {room.roomCode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Action Boxes */}
           <div className="grid sm:grid-cols-2 gap-4">

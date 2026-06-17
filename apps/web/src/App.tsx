@@ -16,43 +16,10 @@ export default function App() {
   const { isAuthenticated, isLoading, setUser, setSession, setLoading } = useAuthStore();
 
   useEffect(() => {
-    // 1. Check current session on mount
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setSession({
-          accessToken: session.access_token,
-          refreshToken: session.refresh_token,
-        });
-        
-        supabase
-          .from("profiles")
-          .select("*")
-          .eq("id", session.user.id)
-          .single()
-          .then(({ data: profile }) => {
-            if (profile) {
-              setUser({
-                id: profile.id,
-                email: profile.email,
-                displayName: profile.name,
-                upiId: profile.upi_id || "",
-                avatarUrl: profile.avatar_url || undefined,
-              });
-            } else {
-              setUser(null);
-            }
-            setLoading(false);
-          });
-      } else {
-        setUser(null);
-        setSession(null);
-        setLoading(false);
-      }
-    });
-
-    // 2. Listen to auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+    // 1. Check current session on mount (once)
+    const initAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
         if (session) {
           setSession({
             accessToken: session.access_token,
@@ -63,6 +30,45 @@ export default function App() {
             .select("*")
             .eq("id", session.user.id)
             .single();
+
+          if (profile) {
+            setUser({
+              id: profile.id,
+              email: profile.email,
+              displayName: profile.name,
+              upiId: profile.upi_id || "",
+              avatarUrl: profile.avatar_url || undefined,
+            });
+          } else {
+            setUser(null);
+          }
+        } else {
+          setUser(null);
+          setSession(null);
+        }
+      } catch (err) {
+        console.error("Initial auth check failed:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initAuth();
+
+    // 2. Listen to subsequent auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (session) {
+          setSession({
+            accessToken: session.access_token,
+            refreshToken: session.refresh_token,
+          });
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", session.user.id)
+            .single();
+
           if (profile) {
             setUser({
               id: profile.id,
@@ -72,11 +78,10 @@ export default function App() {
               avatarUrl: profile.avatar_url || undefined,
             });
           }
-        } else {
+        } else if (event === "SIGNED_OUT") {
           setUser(null);
           setSession(null);
         }
-        setLoading(false);
       }
     );
 
