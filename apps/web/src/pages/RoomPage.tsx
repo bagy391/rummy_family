@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { motion, AnimatePresence, Reorder } from "framer-motion";
 import {
   Trophy, ArrowLeft, Copy, Check, Info, Smartphone
@@ -100,7 +100,6 @@ interface PauseVoteState {
 
 export default function RoomPage() {
   const { roomCode } = useParams<{ roomCode: string }>();
-  const navigate = useNavigate();
   const { user } = useAuthStore();
 
   const [room, setRoom] = useState<Room | null>(null);
@@ -299,7 +298,7 @@ export default function RoomPage() {
         if (roomErr || !roomData) {
           if (active) {
             toast.error("Room not found");
-            navigate("/dashboard");
+            window.location.href = "/dashboard";
           }
           return;
         }
@@ -478,7 +477,7 @@ export default function RoomPage() {
             const { playerId } = payload.payload;
             if (playerId === user?.id) {
               toast.error("You have been removed from the lobby");
-              navigate("/dashboard");
+              window.location.href = "/dashboard";
             }
           })
           .on("broadcast", { event: "leave_share_initiated" }, (payload: any) => {
@@ -555,10 +554,10 @@ export default function RoomPage() {
       const isStillInRoom = players.some(p => p.player_id === user?.id);
       if (!isStillInRoom) {
         toast.error("You have been removed from the lobby");
-        navigate("/dashboard");
+        window.location.href = "/dashboard";
       }
     }
-  }, [players, room, user, navigate]);
+  }, [players, room, user]);
 
   // Handle round state subscriptions once active round is known
   useEffect(() => {
@@ -2077,7 +2076,7 @@ export default function RoomPage() {
       }
 
       toast.success("You quit the game");
-      navigate("/dashboard");
+      window.location.href = "/dashboard";
     } catch (err: any) {
       toast.error(err.message || "Failed to quit room");
     }
@@ -2451,10 +2450,10 @@ export default function RoomPage() {
       setActivePauseVote(null);
       toast.success("Game paused! Redirecting to dashboard...");
       setTimeout(() => {
-        navigate("/dashboard");
+        window.location.href = "/dashboard";
       }, 1000);
     }
-  }, [activePauseVote, room?.id, round?.id, navigate]);
+  }, [activePauseVote, room?.id, round?.id]);
 
   const initiatePauseVote = async () => {
     if (!room || !round || !user || !chatChannelRef.current) return;
@@ -2815,7 +2814,7 @@ export default function RoomPage() {
       )}
 
       {/* 2. GAME PLAY STATE */}
-      {room && room.status === "active" && round && (
+      {room && room.status === "active" && round && round.status === "active" && (
         <div className="flex-1 flex flex-col relative overflow-hidden bg-[var(--gradient-table)]">
           {/* Top Info Bar */}
           <div className="w-full px-3 py-2 landscape:py-1 sm:px-4 sm:py-2.5 bg-black/40 backdrop-blur-sm border-b border-white/5 flex justify-between items-center z-40 shrink-0">
@@ -3448,224 +3447,7 @@ export default function RoomPage() {
             )}
           </AnimatePresence>
 
-          {/* MUTUAL QUIT VOTING MODAL */}
-          <AnimatePresence>
-            {activeQuitVote && (
-              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
-                >
-                  <h3 className="text-xl font-bold font-[Outfit] text-amber-400 mb-2 flex items-center gap-2">
-                    ⚠️ Mutual Quit Proposed
-                  </h3>
 
-                  <p className="text-sm text-[var(--color-text-secondary)] mb-6">
-                    <span className="font-semibold text-white">{activeQuitVote.requesterName}</span> has proposed to end this round and declare all remaining active players as joint winners.
-                  </p>
-
-                  <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
-                      Active Players Votes:
-                    </h4>
-                    {Object.keys(activeQuitVote.votes).map((pid) => {
-                      const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
-                      const vote = activeQuitVote.votes[pid];
-
-                      return (
-                        <div key={pid} className="flex items-center justify-between text-sm">
-                          <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
-                          <span className="text-xs font-semibold">
-                            {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
-                            {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
-                            {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Voting buttons */}
-                  {activeQuitVote.requesterId === user?.id ? (
-                    <div className="flex flex-col items-center gap-3 w-full">
-                      <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
-                        Waiting for other players to vote...
-                      </div>
-                      <button
-                        onClick={cancelMutualQuit}
-                        className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
-                      >
-                        Cancel Proposal
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-4">
-                      <button
-                        onClick={() => voteMutualQuit("disagree")}
-                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Disagree (Play)
-                      </button>
-                      <button
-                        onClick={() => voteMutualQuit("agree")}
-                        className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Agree (Split)
-                      </button>
-                    </div>
-                  )}
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
-
-          {/* LEAVE SHARE VOTING MODAL */}
-          <AnimatePresence>
-            {activeLeaveShareVote && (
-              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
-                >
-                  <h3 className="text-xl font-bold font-[Outfit] text-sky-400 mb-2 flex items-center gap-2">
-                    <Info className="w-5 h-5 text-sky-400" /> Leave Share Proposed
-                  </h3>
-
-                  <p className="text-sm text-[var(--color-text-secondary)] mb-6">
-                    <span className="font-semibold text-white">{activeLeaveShareVote.requesterName}</span> has proposed to activate **Leave Share** for all remaining active players. If approved, you won't pay the winner if you lose, but you won't get paid by other opted-in players.
-                  </p>
-
-                  <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
-                      Active Players Votes:
-                    </h4>
-                    {Object.keys(activeLeaveShareVote.votes).map((pid) => {
-                      const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
-                      const vote = activeLeaveShareVote.votes[pid];
-
-                      return (
-                        <div key={pid} className="flex items-center justify-between text-sm">
-                          <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
-                          <span className="text-xs font-semibold">
-                            {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
-                            {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
-                            {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Voting buttons */}
-                  {activeLeaveShareVote.requesterId === user?.id ? (
-                    <div className="flex flex-col items-center gap-3 w-full">
-                      <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
-                        Waiting for other players to vote...
-                      </div>
-                      <button
-                        onClick={cancelLeaveShare}
-                        className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
-                      >
-                        Cancel Proposal
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-4">
-                      <button
-                        onClick={() => voteLeaveShare("disagree")}
-                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Disagree (Play Normal)
-                      </button>
-                      <button
-                        onClick={() => voteLeaveShare("agree")}
-                        className="flex-1 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Agree (Leave Share)
-                      </button>
-                    </div>
-                  )}
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
-
-          {/* PAUSE VOTING MODAL */}
-          <AnimatePresence>
-            {activePauseVote && (
-              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
-                >
-                  <h3 className="text-xl font-bold font-[Outfit] text-amber-400 mb-2 flex items-center gap-2">
-                    ⏸️ Pause Game Proposed
-                  </h3>
-
-                  <p className="text-sm text-[var(--color-text-secondary)] mb-6">
-                    <span className="font-semibold text-white">{activePauseVote.requesterName}</span> has proposed to pause the game and resume it later.
-                  </p>
-
-                  <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
-                      Active Players Votes:
-                    </h4>
-                    {Object.keys(activePauseVote.votes).map((pid) => {
-                      const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
-                      const vote = activePauseVote.votes[pid];
-
-                      return (
-                        <div key={pid} className="flex items-center justify-between text-sm">
-                          <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
-                          <span className="text-xs font-semibold">
-                            {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
-                            {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
-                            {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Voting buttons */}
-                  {activePauseVote.requesterId === user?.id ? (
-                    <div className="flex flex-col items-center gap-3 w-full">
-                      <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
-                        Waiting for other players to vote...
-                      </div>
-                      <button
-                        onClick={cancelPause}
-                        className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
-                      >
-                        Cancel Proposal
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex gap-4">
-                      <button
-                        onClick={() => votePause("disagree")}
-                        className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Disagree (Play)
-                      </button>
-                      <button
-                        onClick={() => votePause("agree")}
-                        className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md transition-colors"
-                      >
-                        Agree (Pause)
-                      </button>
-                    </div>
-                  )}
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
         </div>
       )}
 
@@ -3983,6 +3765,225 @@ export default function RoomPage() {
           </motion.div>
         </div>
       )}
+
+      {/* MUTUAL QUIT VOTING MODAL */}
+      <AnimatePresence>
+        {activeQuitVote && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
+            >
+              <h3 className="text-xl font-bold font-[Outfit] text-amber-400 mb-2 flex items-center gap-2">
+                ⚠️ Mutual Quit Proposed
+              </h3>
+
+              <p className="text-sm text-[var(--color-text-secondary)] mb-6">
+                <span className="font-semibold text-white">{activeQuitVote.requesterName}</span> has proposed to end this round and declare all remaining active players as joint winners.
+              </p>
+
+              <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
+                  Active Players Votes:
+                </h4>
+                {Object.keys(activeQuitVote.votes).map((pid) => {
+                  const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
+                  const vote = activeQuitVote.votes[pid];
+
+                  return (
+                    <div key={pid} className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
+                      <span className="text-xs font-semibold">
+                        {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
+                        {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
+                        {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Voting buttons */}
+              {activeQuitVote.requesterId === user?.id ? (
+                <div className="flex flex-col items-center gap-3 w-full">
+                  <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
+                    Waiting for other players to vote...
+                  </div>
+                  <button
+                    onClick={cancelMutualQuit}
+                    className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
+                  >
+                    Cancel Proposal
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => voteMutualQuit("disagree")}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Disagree (Play)
+                  </button>
+                  <button
+                    onClick={() => voteMutualQuit("agree")}
+                    className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Agree (Split)
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* LEAVE SHARE VOTING MODAL */}
+      <AnimatePresence>
+        {activeLeaveShareVote && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
+            >
+              <h3 className="text-xl font-bold font-[Outfit] text-sky-400 mb-2 flex items-center gap-2">
+                <Info className="w-5 h-5 text-sky-400" /> Leave Share Proposed
+              </h3>
+
+              <p className="text-sm text-[var(--color-text-secondary)] mb-6">
+                <span className="font-semibold text-white">{activeLeaveShareVote.requesterName}</span> has proposed to activate **Leave Share** for all remaining active players. If approved, you won't pay the winner if you lose, but you won't get paid by other opted-in players.
+              </p>
+
+              <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
+                  Active Players Votes:
+                </h4>
+                {Object.keys(activeLeaveShareVote.votes).map((pid) => {
+                  const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
+                  const vote = activeLeaveShareVote.votes[pid];
+
+                  return (
+                    <div key={pid} className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
+                      <span className="text-xs font-semibold">
+                        {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
+                        {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
+                        {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Voting buttons */}
+              {activeLeaveShareVote.requesterId === user?.id ? (
+                <div className="flex flex-col items-center gap-3 w-full">
+                  <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
+                    Waiting for other players to vote...
+                  </div>
+                  <button
+                    onClick={cancelLeaveShare}
+                    className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
+                  >
+                    Cancel Proposal
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => voteLeaveShare("disagree")}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Disagree (Play Normal)
+                  </button>
+                  <button
+                    onClick={() => voteLeaveShare("agree")}
+                    className="flex-1 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Agree (Leave Share)
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* PAUSE VOTING MODAL */}
+      <AnimatePresence>
+        {activePauseVote && (
+          <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl"
+            >
+              <h3 className="text-xl font-bold font-[Outfit] text-amber-400 mb-2 flex items-center gap-2">
+                ⏸️ Pause Game Proposed
+              </h3>
+
+              <p className="text-sm text-[var(--color-text-secondary)] mb-6">
+                <span className="font-semibold text-white">{activePauseVote.requesterName}</span> has proposed to pause the game and resume it later.
+              </p>
+
+              <div className="space-y-3 mb-6 bg-black/30 p-3.5 rounded-xl border border-white/5">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-1">
+                  Active Players Votes:
+                </h4>
+                {Object.keys(activePauseVote.votes).map((pid) => {
+                  const rpName = players.find(p => p.player_id === pid)?.name || "Unknown";
+                  const vote = activePauseVote.votes[pid];
+
+                  return (
+                    <div key={pid} className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-white">{rpName} {pid === user?.id && "(You)"}</span>
+                      <span className="text-xs font-semibold">
+                        {vote === "agree" && <span className="text-emerald-400">✅ Agreed</span>}
+                        {vote === "disagree" && <span className="text-red-400">❌ Rejected</span>}
+                        {vote === "pending" && <span className="text-amber-400 animate-pulse">⏳ Voting...</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Voting buttons */}
+              {activePauseVote.requesterId === user?.id ? (
+                <div className="flex flex-col items-center gap-3 w-full">
+                  <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
+                    Waiting for other players to vote...
+                  </div>
+                  <button
+                    onClick={cancelPause}
+                    className="w-full py-2.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30 font-bold text-sm shadow-md transition-colors"
+                  >
+                    Cancel Proposal
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => votePause("disagree")}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Disagree (Play)
+                  </button>
+                  <button
+                    onClick={() => votePause("agree")}
+                    className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm shadow-md transition-colors"
+                  >
+                    Agree (Pause)
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

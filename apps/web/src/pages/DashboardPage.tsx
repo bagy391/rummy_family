@@ -90,13 +90,14 @@ export default function DashboardPage() {
 
       if (rpData) {
         const active = rpData
-          .filter((x: any) => x.rooms?.status === "active")
+          .filter((x: any) => x.rooms?.status === "active" || x.rooms?.status === "waiting")
           .map((x: any) => ({
             roomId: x.rooms.id,
             roomCode: x.rooms.room_code,
             betAmount: x.rooms.bet_amount,
             createdAt: x.rooms.created_at,
             playerStatus: x.status,
+            roomStatus: x.rooms.status,
           }));
         setActiveRooms(active);
 
@@ -407,10 +408,10 @@ export default function DashboardPage() {
                 <div>
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <h3 className="font-bold font-[Outfit] text-lg text-emerald-400">Active Game in Progress</h3>
+                    <h3 className="font-bold font-[Outfit] text-lg text-emerald-400">Active Game or Lobby</h3>
                   </div>
                   <p className="text-[var(--color-text-secondary)] text-sm">
-                    You have an ongoing game. Rejoin now to resume playing!
+                    You have an ongoing game or lobby. Rejoin now to resume!
                   </p>
                 </div>
                 <div className="flex flex-col gap-2 w-full sm:w-auto">
@@ -420,7 +421,7 @@ export default function DashboardPage() {
                       onClick={() => navigate(`/room/${room.roomCode}`)}
                       className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg hover:scale-[1.02] transition-all flex items-center justify-center gap-2"
                     >
-                      <LogIn className="w-4 h-4" /> Rejoin Room {room.roomCode}
+                      <LogIn className="w-4 h-4" /> {room.roomStatus === "waiting" ? `Rejoin Lobby ${room.roomCode}` : `Rejoin Room ${room.roomCode}`}
                     </button>
                   ))}
                 </div>
