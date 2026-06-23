@@ -153,6 +153,10 @@ export default function RoomPage() {
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [scoreHistory, setScoreHistory] = useState<any[]>([]);
   const [onlinePlayerIds, setOnlinePlayerIds] = useState<string[]>([]);
+  const onlinePlayerIdsRef = useRef<string[]>([]);
+  useEffect(() => {
+    onlinePlayerIdsRef.current = onlinePlayerIds;
+  }, [onlinePlayerIds]);
 
 
   // Client game state
@@ -197,17 +201,12 @@ export default function RoomPage() {
           activeIds.push(p.player_id);
         }
       } else {
-        const lastSeen = lastSeenMap.current[p.player_id];
         const isOnlineInPresence = presenceOnlineIds.includes(p.player_id);
+        const lastSeen = lastSeenMap.current[p.player_id];
+        const isHeartbeatFresh = lastSeen ? (currentTimes - lastSeen < 12000) : false;
 
-        if (lastSeen) {
-          if (currentTimes - lastSeen < 12000) {
-            activeIds.push(p.player_id);
-          }
-        } else {
-          if (isOnlineInPresence) {
-            activeIds.push(p.player_id);
-          }
+        if (isOnlineInPresence || isHeartbeatFresh) {
+          activeIds.push(p.player_id);
         }
       }
     });
@@ -278,11 +277,25 @@ export default function RoomPage() {
   const myRoundState = roundPlayers.find(p => p.player_id === user?.id);
   const isAdmin = me?.is_admin || false;
   const isMyTurn = round?.current_turn_player_id === user?.id && round?.status === "active";
+  const isDropped = myRoundState?.status === "dropped_first" || myRoundState?.status === "dropped_second";
+
   const isSpectator: boolean =
     me?.status === "spectating" ||
     me?.status === "eliminated" ||
     (room?.status === "active" && round && round.status === "active" && !myRoundState) ||
+    (round?.status === "active" && isDropped) ||  // only during active round
     false;
+
+  // Track turn changes to trigger intense beep and vibration pattern
+  const prevIsMyTurnRef = useRef(false);
+  useEffect(() => {
+    const isNowMyTurn = isMyTurn && round?.status === "active";
+    if (isNowMyTurn && !prevIsMyTurnRef.current) {
+      gameAudio.playYourTurn();
+      gameAudio.triggerHapticYourTurn();
+    }
+    prevIsMyTurnRef.current = isNowMyTurn;
+  }, [isMyTurn, round?.status]);
 
   // 1. Initial Load & Subscriptions
   useEffect(() => {
@@ -700,7 +713,7 @@ export default function RoomPage() {
                 .from("room_players")
                 .update({ status: "disconnected", disconnected_at: new Date().toISOString() })
                 .eq("id", p.id);
-            } else if (isOnline && p.status === "disconnected") {
+            } else if (isOnline && p.status === "disconnected" && (isAdmin || p.player_id === userId)) {
               await supabase
                 .from("room_players")
                 .update({ status: roomStatusRef.current === "waiting" ? "waiting" : "active", disconnected_at: null })
@@ -995,16 +1008,27 @@ export default function RoomPage() {
 
   const promoteNextAdmin = async (adminPlayer: RoomPlayer) => {
     const currentPlayers = playersRef.current;
-    const onlinePlayers = currentPlayers.filter(p => presenceOnlineIdsRef.current.includes(p.player_id));
+    const onlinePlayers = currentPlayers.filter(p => onlinePlayerIdsRef.current.includes(p.player_id));
     const amIPrimary = onlinePlayers[0]?.player_id === user?.id;
 
     if (!amIPrimary) return;
 
-    const nextAdmin = currentPlayers.find(
-      p => p.player_id !== adminPlayer.player_id && p.status !== "eliminated"
+    let nextAdmin = currentPlayers.find(
+      p => p.player_id !== adminPlayer.player_id &&
+        p.status !== "eliminated" &&
+        onlinePlayerIdsRef.current.includes(p.player_id)
     );
+
+    // Fallback: if no online player is available, promote any remaining active/disconnected player
+    if (!nextAdmin) {
+      nextAdmin = currentPlayers.find(
+        p => p.player_id !== adminPlayer.player_id && p.status !== "eliminated"
+      );
+    }
+
     if (nextAdmin) {
-      toast.info(`Host disconnected. Promoting ${nextAdmin.name} to host.`);
+      const reason = adminPlayer.status === "eliminated" ? "eliminated" : "disconnected";
+      toast.info(`Host ${reason}. Promoting ${nextAdmin.name} to host.`);
       try {
         await supabase.from("room_players").update({ is_admin: true }).eq("id", nextAdmin.id);
         await supabase.from("room_players").update({ is_admin: false }).eq("id", adminPlayer.id);
@@ -1018,35 +1042,74 @@ export default function RoomPage() {
   useEffect(() => {
     if (!room || room.status === "finished" || !user) return;
 
-    const adminPlayer = players.find(p => p.is_admin);
+    const currentPlayers = players;
+    const onlinePlayers = currentPlayers.filter(p => onlinePlayerIds.includes(p.player_id));
+    const amIPrimary = onlinePlayers[0]?.player_id === user.id;
+
+    // 1. Self-healing connection status sync (run by primary player)
+    if (amIPrimary) {
+      currentPlayers.forEach(async (p) => {
+        if (p.player_id === user.id) return;
+        const isOnline = onlinePlayerIds.includes(p.player_id);
+
+        if (!isOnline && (p.status === "active" || p.status === "waiting")) {
+          await supabase
+            .from("room_players")
+            .update({ status: "disconnected", disconnected_at: new Date().toISOString() })
+            .eq("id", p.id);
+        } else if (isOnline && p.status === "disconnected" && isAdmin) {
+          await supabase
+            .from("room_players")
+            .update({ status: room.status === "waiting" ? "waiting" : "active", disconnected_at: null })
+            .eq("id", p.id);
+        }
+      });
+    }
+
+    // 2. Host Timeout Promotion
+    const adminPlayer = currentPlayers.find(p => p.is_admin);
     if (!adminPlayer) return;
 
     const isAdminOnline = onlinePlayerIds.includes(adminPlayer.player_id);
 
-    if (!isAdminOnline) {
-      // Case A: Host is eliminated -> promote instantly
-      if (adminPlayer.status === "eliminated") {
-        promoteNextAdmin(adminPlayer);
-        return;
-      }
+    // Case A: Host is eliminated -> promote instantly
+    if (adminPlayer.status === "eliminated") {
+      promoteNextAdmin(adminPlayer);
+      return;
+    }
 
-      // Case B: Host is active/playing -> promote after 1 minute
+    // Case B: Host is active/playing/offline -> promote after 1 minute
+    if (!isAdminOnline) {
       if (adminPlayer.status === "disconnected" && adminPlayer.disconnected_at) {
         const disconnectedTime = new Date(adminPlayer.disconnected_at).getTime();
         const elapsedMs = Date.now() - disconnectedTime;
-        const delayMs = 60 * 1000 - elapsedMs;
 
-        if (delayMs <= 0) {
+        if (elapsedMs >= 60 * 1000) {
           promoteNextAdmin(adminPlayer);
-        } else {
-          const timer = setTimeout(() => {
-            promoteNextAdmin(adminPlayer);
-          }, delayMs);
-          return () => clearTimeout(timer);
         }
       }
     }
-  }, [players, onlinePlayerIds, room?.status, user?.id]);
+  }, [nowTime, players, onlinePlayerIds, room?.status, user?.id]);
+
+  // Self-heal own status to active when rejoining/online
+  useEffect(() => {
+    if (!room || room.status === "finished" || !user || !isBrowserOnline) return;
+    const me = players.find(p => p.player_id === user.id);
+    if (me && me.status === "disconnected") {
+      supabase
+        .from("room_players")
+        .update({
+          status: room.status === "waiting" ? "waiting" : "active",
+          disconnected_at: null
+        })
+        .eq("id", me.id)
+        .then(({ error }) => {
+          if (!error) {
+            fetchPlayers(room.id);
+          }
+        });
+    }
+  }, [players, room?.id, room?.status, user?.id, isBrowserOnline]);
 
 
   useEffect(() => {
@@ -1065,7 +1128,14 @@ export default function RoomPage() {
         toast.info(`Original host ${originalHost.name} has rejoined. Handing back host rights.`);
         const executeHandoverBack = async () => {
           try {
-            await supabase.from("room_players").update({ is_admin: true }).eq("id", originalHost.id);
+            await supabase
+              .from("room_players")
+              .update({
+                is_admin: true,
+                status: room.status === "waiting" ? "waiting" : "active",
+                disconnected_at: null,
+              })
+              .eq("id", originalHost.id);
             await supabase.from("room_players").update({ is_admin: false }).eq("id", mePlayer.id);
           } catch (e) {
             console.error("Failed to hand back host rights:", e);
@@ -1762,12 +1832,6 @@ export default function RoomPage() {
                   .update({ is_admin: false })
                   .eq("id", me.id);
 
-                // Update room owner/host in public.rooms
-                await supabase
-                  .from("rooms")
-                  .update({ created_by: nextAdminRoomPlayer.player_id })
-                  .eq("id", room.id);
-
                 toast.info(`Host role transferred to ${nextAdminRoomPlayer.name} as you have been eliminated.`);
               }
             }
@@ -2089,7 +2153,6 @@ export default function RoomPage() {
         if (nextAdmin) {
           await supabase.from("room_players").update({ is_admin: true }).eq("id", nextAdmin.id);
           await supabase.from("room_players").update({ is_admin: false }).eq("id", me.id);
-          await supabase.from("rooms").update({ created_by: nextAdmin.player_id }).eq("id", room.id);
         }
       }
 
@@ -2866,91 +2929,100 @@ export default function RoomPage() {
       {/* 2. GAME PLAY STATE */}
       {room && room.status === "active" && round && round.status === "active" && (
         <>
-        <GameScreen
-          betAmount={room.bet_amount}
-          roundNumber={round.round_number}
-          roundStatus={round.status}
-          wildJoker={round.wild_joker}
-          currentTurnPlayerId={round.current_turn_player_id}
-          turnOrderIndex={round.turn_order_index}
-          discardPile={round.discard_pile || []}
-          players={players}
-          roundPlayers={roundPlayers}
-          userId={user?.id}
-          isAdmin={isAdmin}
-          isMyTurn={isMyTurn}
-          isSpectator={isSpectator}
-          onlinePlayerIds={onlinePlayerIds}
-          floatingEmojis={floatingEmojis}
-          myHand={myHand}
-          selectedCards={selectedCards}
-          myTotalScore={me?.total_score ?? 0}
-          hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
-          onQuit={handleQuitGame}
-          onDrawCard={handleDrawCard}
-          onPickDiscard={handlePickDiscard}
-          onDiscard={handleDiscardCard}
-          onDeclareShow={handleDeclareShow}
-          onDropFirst={() => handleDrop("FIRST")}
-          onDropSecond={() => handleDrop("SECOND")}
-          onCardClick={handleCardClick}
-          onReorderHand={setMyHand}
-          onAdminKick={handleAdminKick}
-          getTimeoutText={getTimeoutText}
-          soundOn={soundOn}
-          vibrationOn={vibrationOn}
-          onToggleSound={toggleSound}
-          onToggleVibration={toggleVibration}
-          onOpenChat={() => { setIsChatOpen(true); setUnreadCount(0); }}
-          unreadCount={unreadCount}
-          spectatorContent={
-            <div className="w-full bg-[#0D1B2A]/95 backdrop-blur-md border-t border-emerald-500/20 p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0">
-              <div className="flex flex-col sm:flex-row items-center justify-between w-full max-w-4xl gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
-                    <svg className="w-6 h-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[14px] uppercase font-bold tracking-wider text-emerald-400">Observer Mode</span>
-                      <span className="px-2 py-0.5 rounded-full text-[12px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                        {me?.status === "eliminated"
-                          ? `Eliminated (Score: ${me.total_score})`
-                          : "Spectating Round"}
-                      </span>
+          <GameScreen
+            betAmount={room.bet_amount}
+            roundNumber={round.round_number}
+            roundStatus={round.status}
+            wildJoker={round.wild_joker}
+            currentTurnPlayerId={round.current_turn_player_id}
+            turnOrderIndex={round.turn_order_index}
+            discardPile={round.discard_pile || []}
+            players={players}
+            roundPlayers={roundPlayers}
+            userId={user?.id}
+            isAdmin={isAdmin}
+            isMyTurn={isMyTurn}
+            isSpectator={isSpectator}
+            onlinePlayerIds={onlinePlayerIds}
+            floatingEmojis={floatingEmojis}
+            myHand={myHand}
+            selectedCards={selectedCards}
+            myTotalScore={me?.total_score ?? 0}
+            hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
+            onQuit={handleQuitGame}
+            onDrawCard={handleDrawCard}
+            onPickDiscard={handlePickDiscard}
+            onDiscard={handleDiscardCard}
+            onDeclareShow={handleDeclareShow}
+            onDropFirst={() => handleDrop("FIRST")}
+            onDropSecond={() => handleDrop("SECOND")}
+            onCardClick={handleCardClick}
+            onReorderHand={setMyHand}
+            onAdminKick={handleAdminKick}
+            getTimeoutText={getTimeoutText}
+            soundOn={soundOn}
+            vibrationOn={vibrationOn}
+            onToggleSound={toggleSound}
+            onToggleVibration={toggleVibration}
+            onOpenChat={() => { setIsChatOpen(true); setUnreadCount(0); }}
+            unreadCount={unreadCount}
+            spectatorContent={
+              <div className={`w-full bg-[#0D1B2A]/95 backdrop-blur-md border-t p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0 ${isDropped ? "border-amber-500/20" : "border-emerald-500/20"
+                }`}>
+                <div className="flex flex-col sm:flex-row items-center justify-between w-full max-w-4xl gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2.5 rounded-xl flex items-center justify-center shrink-0 border ${isDropped
+                      ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                      : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                      }`}>
+                      <svg className="w-6 h-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
                     </div>
-                    <p className="text-[14px] text-white/50 mt-0.5 max-w-md">
-                      {me?.status === "eliminated"
-                        ? "You have been eliminated from the game table. You can still chat, send reactions, and watch."
-                        : "You joined mid-round. You'll join when the next round starts."}
-                    </p>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[14px] uppercase font-bold tracking-wider ${isDropped ? "text-amber-400" : "text-emerald-400"
+                          }`}>Observer Mode</span>
+                        <span className="px-2 py-0.5 rounded-full text-[12px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          {me?.status === "eliminated"
+                            ? `Eliminated (Score: ${me.total_score})`
+                            : isDropped
+                              ? `Dropped (Score: +${myRoundState?.score_this_round || (myRoundState?.status === "dropped_second" ? 40 : 20)})`
+                              : "Spectating Round"}
+                        </span>
+                      </div>
+                      <p className="text-[14px] text-white/50 mt-0.5 max-w-md">
+                        {me?.status === "eliminated"
+                          ? "You have been eliminated from the game table. You can still chat, send reactions, and watch."
+                          : isDropped
+                            ? "You were dropped from the current round. You can still watch, chat, and send reactions, and you will rejoin when the next round starts."
+                            : "You joined mid-round. You'll join when the next round starts."}
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-4 shrink-0">
-                  {["😂", "🔥", "👍", "💬"].map((emoji) => (
+                  <div className="flex items-center gap-4 shrink-0">
+                    {["😂", "🔥", "👍", "💬"].map((emoji) => (
+                      <button
+                        key={emoji}
+                        onClick={() => sendEmojiReaction(emoji)}
+                        type="button"
+                        className="text-2xl hover:scale-125 active:scale-95 transition-transform p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
                     <button
-                      key={emoji}
-                      onClick={() => sendEmojiReaction(emoji)}
-                      type="button"
-                      className="text-2xl hover:scale-125 active:scale-95 transition-transform p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                      onClick={() => { setIsChatOpen(true); setUnreadCount(0); }}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-md transition-colors flex items-center gap-1.5 min-h-[44px]"
                     >
-                      {emoji}
+                      Chat
                     </button>
-                  ))}
-                  <button
-                    onClick={() => { setIsChatOpen(true); setUnreadCount(0); }}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-md transition-colors flex items-center gap-1.5 min-h-[44px]"
-                  >
-                    Chat
-                  </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          }
-        />
+            }
+          />
 
           {/* Chat Drawer Overlay */}
           <AnimatePresence>
@@ -3208,7 +3280,11 @@ export default function RoomPage() {
               </div>
 
               {/* Voting buttons */}
-              {activeQuitVote.requesterId === user?.id ? (
+              {isSpectator ? (
+                <div className="text-center text-xs text-[var(--color-text-muted)] italic py-2">
+                  Only active players can vote. Watching...
+                </div>
+              ) : activeQuitVote.requesterId === user?.id ? (
                 <div className="flex flex-col items-center gap-3 w-full">
                   <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
                     Waiting for other players to vote...
@@ -3281,7 +3357,11 @@ export default function RoomPage() {
               </div>
 
               {/* Voting buttons */}
-              {activeLeaveShareVote.requesterId === user?.id ? (
+              {isSpectator ? (
+                <div className="text-center text-xs text-[var(--color-text-muted)] italic py-2">
+                  Only active players can vote. Watching...
+                </div>
+              ) : activeLeaveShareVote.requesterId === user?.id ? (
                 <div className="flex flex-col items-center gap-3 w-full">
                   <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
                     Waiting for other players to vote...
@@ -3354,7 +3434,11 @@ export default function RoomPage() {
               </div>
 
               {/* Voting buttons */}
-              {activePauseVote.requesterId === user?.id ? (
+              {isSpectator ? (
+                <div className="text-center text-xs text-[var(--color-text-muted)] italic py-2">
+                  Only active players can vote. Watching...
+                </div>
+              ) : activePauseVote.requesterId === user?.id ? (
                 <div className="flex flex-col items-center gap-3 w-full">
                   <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse py-2">
                     Waiting for other players to vote...

@@ -283,6 +283,15 @@
                 0 0 40px rgba(245, 166, 35, 0.2);
     border-color: var(--color-gold) !important;
   }
+
+  /* Hide scrollbar utility */
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-none {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
 }
 
 /* ---------- Animations ---------- */

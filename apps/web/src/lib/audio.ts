@@ -214,6 +214,42 @@ class GameAudioManager {
   public triggerHapticWrongShow() {
     this.vibrate(350);
   }
+
+  public playYourTurn() {
+    if (!this.soundEnabled) return;
+    this.initContext();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    
+    // Play two quick, intense chimes: first one high (E5), second one higher (A5)
+    const osc1 = this.ctx.createOscillator();
+    const gain1 = this.ctx.createGain();
+    osc1.connect(gain1);
+    gain1.connect(this.ctx.destination);
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(659.25, now); // E5
+    gain1.gain.setValueAtTime(0.12, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    osc1.start(now);
+    osc1.stop(now + 0.1);
+
+    const osc2 = this.ctx.createOscillator();
+    const gain2 = this.ctx.createGain();
+    osc2.connect(gain2);
+    gain2.connect(this.ctx.destination);
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(880.00, now + 0.08); // A5
+    gain2.gain.setValueAtTime(0.15, now + 0.08);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.08 + 0.35);
+    osc2.start(now + 0.08);
+    osc2.stop(now + 0.08 + 0.35);
+  }
+
+  public triggerHapticYourTurn() {
+    // Intense: 2 quick pulses followed by a longer, stronger buzz
+    this.vibrate([120, 80, 120, 80, 300]);
+  }
 }
 
 export const gameAudio = new GameAudioManager();

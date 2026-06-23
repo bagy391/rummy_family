@@ -143,8 +143,8 @@ export default function GameScreen({
   };
 
   const canDrop = isMyTurn && !hasDrawnThisTurn;
-  const showFirstDrop = canDrop && turnOrderIndex < players.length && (myTotalScore + 20) < 250;
-  const showSecondDrop = canDrop && turnOrderIndex >= players.length && (myTotalScore + 40) < 250;
+  const showFirstDrop = canDrop && turnOrderIndex < roundPlayers.length && (myTotalScore + 20) < 250;
+  const showSecondDrop = canDrop && turnOrderIndex >= roundPlayers.length && (myTotalScore + 40) < 250;
 
   return (
     <div className="flex-1 flex flex-col relative overflow-hidden felt-texture h-full w-full">
