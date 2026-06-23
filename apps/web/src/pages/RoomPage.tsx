@@ -1351,6 +1351,12 @@ export default function RoomPage() {
     if (!room) return;
 
     // Filter only active room players (not eliminated)
+    // so auto-drop timer starts fresh from round start
+    await supabase
+      .from("room_players")
+      .update({ disconnected_at: new Date().toISOString() })
+      .eq("room_id", room.id)
+      .eq("status", "disconnected");
     const activePlayers = players.filter(p => p.status === "active" || p.status === "waiting" || p.status === "disconnected");
 
     if (activePlayers.length < 2) {
