@@ -7,13 +7,18 @@ import LoginPage from "@/pages/LoginPage";
 import RegisterPage from "@/pages/RegisterPage";
 import DashboardPage from "@/pages/DashboardPage";
 import RoomPage from "@/pages/RoomPage"; // We will create this next
+import { decodeCleanUTF8 } from "@/lib/utils";
 
 /**
  * Main application component with routing.
  * Routes are split into public (auth) and protected (game) routes.
  */
 export default function App() {
-  const { isAuthenticated, isLoading, setUser, setSession, setLoading } = useAuthStore();
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLoading = useAuthStore((s) => s.isLoading);
+  const setUser = useAuthStore((s) => s.setUser);
+  const setSession = useAuthStore((s) => s.setSession);
+  const setLoading = useAuthStore((s) => s.setLoading);
 
   useEffect(() => {
     // 1. Check current session on mount (once)
@@ -35,9 +40,10 @@ export default function App() {
             setUser({
               id: profile.id,
               email: profile.email,
-              displayName: profile.name,
+              displayName: decodeCleanUTF8(profile.name),
               upiId: profile.upi_id || "",
               avatarUrl: profile.avatar_url || undefined,
+              role: profile.role || "player",
             });
           } else {
             setUser(null);
@@ -73,9 +79,10 @@ export default function App() {
             setUser({
               id: profile.id,
               email: profile.email,
-              displayName: profile.name,
+              displayName: decodeCleanUTF8(profile.name),
               upiId: profile.upi_id || "",
               avatarUrl: profile.avatar_url || undefined,
+              role: profile.role || "player",
             });
           }
         } else if (event === "SIGNED_OUT") {

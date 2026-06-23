@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
-import { motion, AnimatePresence, Reorder } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Trophy, ArrowLeft, Copy, Check, Info, Smartphone
 } from "lucide-react";
@@ -9,12 +9,16 @@ import { useAuthStore } from "@/stores/auth-store";
 import { toast } from "sonner";
 import { gameAudio } from "@/lib/audio";
 import {
-  Suit, Rank,
+  Rank,
   createShuffledDeck, dealCards, selectWildJokerCard, resolveWildJoker,
   validateShow, findOptimalGrouping,
   isPureSequence, isImpureSequence, isValidSet, isLondon
 } from "@rummy/shared";
 import type { Card, WildJokerInfo } from "@rummy/shared";
+import GameScreen from "@/components/game/GameScreen";
+import PostRoundModal from "@/components/game/PostRoundModal";
+import { decodeCleanUTF8 } from "@/lib/utils";
+
 
 interface Room {
   id: string;
@@ -35,6 +39,7 @@ interface RoomPlayer {
   total_score: number;
   opted_leave_share: boolean;
   upi_id: string;
+  avatarUrl?: string | null;
   disconnected_at?: string | null;
 }
 
@@ -175,7 +180,7 @@ export default function RoomPage() {
   // Audio & Haptic state
   const [soundOn, setSoundOn] = useState(gameAudio.isSoundEnabled());
   const [vibrationOn, setVibrationOn] = useState(gameAudio.isVibrationEnabled());
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   const [isChartVisible, setIsChartVisible] = useState(false);
 
   const prevRoundStatusRef = useRef<string | null>(null);
@@ -273,10 +278,11 @@ export default function RoomPage() {
   const myRoundState = roundPlayers.find(p => p.player_id === user?.id);
   const isAdmin = me?.is_admin || false;
   const isMyTurn = round?.current_turn_player_id === user?.id && round?.status === "active";
-  const isSpectator =
+  const isSpectator: boolean =
     me?.status === "spectating" ||
     me?.status === "eliminated" ||
-    (room?.status === "active" && round && round.status === "active" && !myRoundState);
+    (room?.status === "active" && round && round.status === "active" && !myRoundState) ||
+    false;
 
   // 1. Initial Load & Subscriptions
   useEffect(() => {
@@ -680,21 +686,10 @@ export default function RoomPage() {
           const currentPlayers = playersRef.current;
           if (currentPlayers.length === 0) return;
 
-          const adminPlayer = currentPlayers.find(p => p.is_admin);
-          const isAdminOnline = adminPlayer && onlineIds.includes(adminPlayer.player_id);
           const onlinePlayers = currentPlayers.filter(p => onlineIds.includes(p.player_id));
           const amIPrimary = onlinePlayers[0]?.player_id === userId;
 
-          // 1. Promote new admin if admin disconnected
-          if (roomStatusRef.current !== "finished" && adminPlayer && !isAdminOnline && amIPrimary) {
-            const nextAdmin = onlinePlayers.find(p => p.player_id !== adminPlayer.player_id && p.status !== "eliminated");
-            if (nextAdmin) {
-              toast.info(`Host disconnected. Promoting ${nextAdmin.name} to host.`);
-              await supabase.from("room_players").update({ is_admin: true }).eq("id", nextAdmin.id);
-              await supabase.from("room_players").update({ is_admin: false }).eq("id", adminPlayer.id);
-              await supabase.from("rooms").update({ created_by: nextAdmin.player_id }).eq("id", roomId);
-            }
-          }
+
 
           // 2. Update status of players who disconnected/reconnected
           for (const p of currentPlayers) {
@@ -797,7 +792,7 @@ export default function RoomPage() {
   async function fetchPlayers(roomId: string) {
     const { data } = await supabase
       .from("room_players")
-      .select("id, player_id, seat_position, status, is_admin, total_score, opted_leave_share, disconnected_at, profiles(name, upi_id)")
+      .select("id, player_id, seat_position, status, is_admin, total_score, opted_leave_share, disconnected_at, profiles(name, upi_id, avatar_url)")
       .eq("room_id", roomId)
       .order("seat_position");
 
@@ -805,13 +800,14 @@ export default function RoomPage() {
       const mapped = data.map((x: any) => ({
         id: x.id,
         player_id: x.player_id,
-        name: x.profiles?.name || "Player",
+        name: decodeCleanUTF8(x.profiles?.name || "Player"),
         seat_position: x.seat_position,
         status: x.status,
         is_admin: x.is_admin,
         total_score: x.total_score,
         opted_leave_share: x.opted_leave_share,
         upi_id: x.profiles?.upi_id || "",
+        avatarUrl: x.profiles?.avatar_url || null,
         disconnected_at: x.disconnected_at,
       }));
       setPlayers(mapped);
@@ -997,9 +993,105 @@ export default function RoomPage() {
     }
   }
 
+  const promoteNextAdmin = async (adminPlayer: RoomPlayer) => {
+    const currentPlayers = playersRef.current;
+    const onlinePlayers = currentPlayers.filter(p => presenceOnlineIdsRef.current.includes(p.player_id));
+    const amIPrimary = onlinePlayers[0]?.player_id === user?.id;
+
+    if (!amIPrimary) return;
+
+    const nextAdmin = currentPlayers.find(
+      p => p.player_id !== adminPlayer.player_id && p.status !== "eliminated"
+    );
+    if (nextAdmin) {
+      toast.info(`Host disconnected. Promoting ${nextAdmin.name} to host.`);
+      try {
+        await supabase.from("room_players").update({ is_admin: true }).eq("id", nextAdmin.id);
+        await supabase.from("room_players").update({ is_admin: false }).eq("id", adminPlayer.id);
+      } catch (e) {
+        console.error("Failed to promote next admin:", e);
+      }
+    }
+  };
+
+
+  useEffect(() => {
+    if (!room || room.status === "finished" || !user) return;
+
+    const adminPlayer = players.find(p => p.is_admin);
+    if (!adminPlayer) return;
+
+    const isAdminOnline = onlinePlayerIds.includes(adminPlayer.player_id);
+
+    if (!isAdminOnline) {
+      // Case A: Host is eliminated -> promote instantly
+      if (adminPlayer.status === "eliminated") {
+        promoteNextAdmin(adminPlayer);
+        return;
+      }
+
+      // Case B: Host is active/playing -> promote after 1 minute
+      if (adminPlayer.status === "disconnected" && adminPlayer.disconnected_at) {
+        const disconnectedTime = new Date(adminPlayer.disconnected_at).getTime();
+        const elapsedMs = Date.now() - disconnectedTime;
+        const delayMs = 60 * 1000 - elapsedMs;
+
+        if (delayMs <= 0) {
+          promoteNextAdmin(adminPlayer);
+        } else {
+          const timer = setTimeout(() => {
+            promoteNextAdmin(adminPlayer);
+          }, delayMs);
+          return () => clearTimeout(timer);
+        }
+      }
+    }
+  }, [players, onlinePlayerIds, room?.status, user?.id]);
+
+
+  useEffect(() => {
+    if (!room || room.status === "finished" || !user) return;
+
+    // Find if the current user is the temporary admin
+    const mePlayer = players.find(p => p.player_id === user.id);
+    const isMeTempAdmin = mePlayer?.is_admin === true && room.created_by !== user.id;
+
+    if (isMeTempAdmin) {
+      // Find the original host player record
+      const originalHost = players.find(p => p.player_id === room.created_by);
+      const isOriginalHostOnline = originalHost && onlinePlayerIds.includes(room.created_by);
+
+      if (isOriginalHostOnline && originalHost.status !== "eliminated") {
+        toast.info(`Original host ${originalHost.name} has rejoined. Handing back host rights.`);
+        const executeHandoverBack = async () => {
+          try {
+            await supabase.from("room_players").update({ is_admin: true }).eq("id", originalHost.id);
+            await supabase.from("room_players").update({ is_admin: false }).eq("id", mePlayer.id);
+          } catch (e) {
+            console.error("Failed to hand back host rights:", e);
+          }
+        };
+        executeHandoverBack();
+      }
+    }
+  }, [players, onlinePlayerIds, room?.status, room?.created_by, user?.id]);
+
   // Admin Kick/Drop & Auto Drop Handlers
   const handleAdminKick = async (targetPlayerId: string, action: "ELIMINATE" | "DROP") => {
     if (!room || !isAdmin) return;
+
+    const targetPlayer = players.find(p => p.player_id === targetPlayerId);
+    const targetName = targetPlayer ? targetPlayer.name : "Player";
+
+    if (action === "ELIMINATE") {
+      const msg = room.status === "waiting"
+        ? `Are you sure you want to kick ${targetName} from the lobby?`
+        : `Are you sure you want to kick ${targetName} from the game? They will be eliminated.`;
+      if (!window.confirm(msg)) return;
+    } else if (action === "DROP") {
+      if (!window.confirm(`Are you sure you want to drop ${targetName} for the current round?`)) return;
+    }
+
     setLoadingAction(true);
 
     try {
@@ -2134,48 +2226,6 @@ export default function RoomPage() {
     }
   };
 
-  // Helper formatting for card ranks and suits
-  const cardSuitColor = (suit: Suit) => {
-    switch (suit) {
-      case Suit.HEARTS: return "text-rose-600";
-      case Suit.DIAMONDS: return "text-rose-600";
-      case Suit.CLUBS: return "text-slate-800";
-      case Suit.SPADES: return "text-slate-800";
-      case Suit.JOKER: return "text-indigo-600";
-      default: return "";
-    }
-  };
-
-  const cardSuitSymbol = (suit: Suit) => {
-    switch (suit) {
-      case Suit.HEARTS: return "♥";
-      case Suit.DIAMONDS: return "♦";
-      case Suit.CLUBS: return "♣";
-      case Suit.SPADES: return "♠";
-      case Suit.JOKER: return "🃏";
-      default: return "";
-    }
-  };
-
-  const cardRankName = (rank: Rank) => {
-    switch (rank) {
-      case Rank.ACE: return "A";
-      case Rank.TWO: return "2";
-      case Rank.THREE: return "3";
-      case Rank.FOUR: return "4";
-      case Rank.FIVE: return "5";
-      case Rank.SIX: return "6";
-      case Rank.SEVEN: return "7";
-      case Rank.EIGHT: return "8";
-      case Rank.NINE: return "9";
-      case Rank.TEN: return "10";
-      case Rank.JACK: return "J";
-      case Rank.QUEEN: return "Q";
-      case Rank.KING: return "K";
-      case Rank.PRINTED_JOKER: return "Jkr";
-      default: return "";
-    }
-  };
 
 
   const sendMessage = async (msgText: string) => {
@@ -2815,361 +2865,47 @@ export default function RoomPage() {
 
       {/* 2. GAME PLAY STATE */}
       {room && room.status === "active" && round && round.status === "active" && (
-        <div className="flex-1 flex flex-col relative overflow-hidden bg-[var(--gradient-table)]">
-          {/* Top Info Bar */}
-          <div className="w-full px-3 py-2 landscape:py-1 sm:px-4 sm:py-2.5 bg-black/40 backdrop-blur-sm border-b border-white/5 flex justify-between items-center z-40 shrink-0">
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              <button
-                onClick={handleQuitGame}
-                className="text-[10px] text-red-400 hover:text-red-300 font-semibold bg-red-500/10 border border-red-500/20 px-3 py-2 landscape:py-1 rounded whitespace-nowrap min-w-[44px] landscape:min-w-[36px] min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-              >
-                Quit<span className="hidden sm:inline"> Game</span>
-              </button>
-              <div className="text-[10px] sm:text-xs font-semibold ml-1 sm:ml-2 whitespace-nowrap">
-                Round {round.round_number}
-              </div>
-            </div>
-
-            {/* Wild Joker Display */}
-            {round.wild_joker && (
-              <motion.div
-                animate={{
-                  scale: [1, 1.02, 1],
-                  boxShadow: [
-                    "0 0 4px rgba(245, 158, 11, 0.2)",
-                    "0 0 12px 2px rgba(245, 158, 11, 0.4)",
-                    "0 0 4px rgba(245, 158, 11, 0.2)"
-                  ]
-                }}
-                transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut" }}
-                className="flex items-center gap-1.5 bg-slate-950/70 border border-amber-500/40 pl-2.5 pr-1 py-1 rounded-xl text-[10px] sm:text-xs whitespace-nowrap z-50 shadow-md"
-              >
-                <span className="text-[9px] sm:text-[10px] uppercase tracking-wider text-amber-400 font-extrabold flex items-center gap-0.5">
-                  <span className="animate-bounce">🃏</span> Joker
-                </span>
-                {(() => {
-                  const jokerCard = (round.wild_joker as any).card || round.wild_joker;
-                  return (
-                    <div className="w-[30px] h-[42px] sm:w-[34px] sm:h-[48px] rounded bg-white border border-amber-400 shadow-sm flex flex-col justify-between p-0.5 text-black shrink-0 relative overflow-hidden select-none">
-                      <div className="flex flex-col items-start leading-none">
-                        <span className={`text-[11px] sm:text-[13px] font-black leading-none ${cardSuitColor(jokerCard.suit)}`}>
-                          {cardRankName(jokerCard.rank)}
-                        </span>
-                      </div>
-                      <div className={`text-[14px] sm:text-[16px] text-center font-bold self-center leading-none -mt-1 ${cardSuitColor(jokerCard.suit)}`}>
-                        {cardSuitSymbol(jokerCard.suit)}
-                      </div>
-                      <div className="flex flex-col items-end leading-none scale-y-[-1] scale-x-[-1] self-end">
-                        <span className={`text-[8px] sm:text-[9px] font-black leading-none ${cardSuitColor(jokerCard.suit)}`}>
-                          {cardRankName(jokerCard.rank)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </motion.div>
-            )}
-
-            <div className="flex items-center gap-1.5 sm:gap-2">
-              {/* Portrait Rotation Prompt Badge */}
-              <div className="flex portrait:flex landscape:hidden items-center gap-1 bg-amber-500/20 border border-amber-500/40 text-amber-400 px-2 py-1 rounded-full text-[9px] font-extrabold animate-pulse whitespace-nowrap sm:hidden">
-                <span>🔄 Rotate Screen</span>
-              </div>
-
-              <div className="text-[10px] sm:text-xs text-amber-500 font-bold whitespace-nowrap mr-1">
-                <span className="hidden sm:inline">Bet: </span>₹{room.bet_amount}
-              </div>
-
-              {/* Rotation helper icon */}
-              <button
-                onClick={() => {
-                  toast.info("Rotate your device sideways (Landscape) for a full-screen table view!");
-                }}
-                className="p-1.5 rounded hover:bg-white/10 text-white transition-colors sm:hidden min-w-[44px] landscape:min-w-[36px] min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-                title="Rotate Device"
-              >
-                <Smartphone className="w-4 h-4 rotate-90 text-slate-300 hover:text-white" />
-              </button>
-
-              {/* Settings Toggle */}
-              <div className="relative">
-                <button
-                  onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                  className="p-1.5 rounded hover:bg-white/10 text-white transition-colors min-w-[44px] landscape:min-w-[36px] min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-                  title="Settings"
-                >
-                  <svg className="w-5 h-5 text-slate-300 hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </button>
-
-                {isSettingsOpen && (
-                  <div className="absolute right-0 mt-2 w-44 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-xl shadow-xl p-3 z-50 flex flex-col gap-2.5">
-                    <div className="text-[10px] font-bold text-[var(--color-text-muted)] uppercase tracking-wider mb-0.5">
-                      Preferences
-                    </div>
-
-                    <button
-                      onClick={toggleSound}
-                      className="flex items-center justify-between text-xs font-semibold text-white bg-black/30 hover:bg-black/50 px-2.5 py-1.5 rounded-lg border border-white/5 transition-colors min-h-[44px] landscape:min-h-[36px]"
-                    >
-                      <span>Sound</span>
-                      <span className={soundOn ? "text-emerald-400" : "text-red-400"}>
-                        {soundOn ? "ON" : "OFF"}
-                      </span>
-                    </button>
-
-                    <button
-                      onClick={toggleVibration}
-                      className="flex items-center justify-between text-xs font-semibold text-white bg-black/30 hover:bg-black/50 px-2.5 py-1.5 rounded-lg border border-white/5 transition-colors min-h-[44px] landscape:min-h-[36px]"
-                    >
-                      <span>Vibration</span>
-                      <span className={vibrationOn ? "text-emerald-400" : "text-red-400"}>
-                        {vibrationOn ? "ON" : "OFF"}
-                      </span>
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <button
-                onClick={() => {
-                  setIsChatOpen(true);
-                  setUnreadCount(0);
-                }}
-                className="relative p-1.5 rounded hover:bg-white/10 text-white transition-colors min-w-[44px] landscape:min-w-[36px] min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-                title="Open Chat"
-              >
-                <svg className="w-5 h-5 text-slate-300 hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                {unreadCount > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-[9px] text-white font-bold w-3.5 h-3.5 rounded-full flex items-center justify-center animate-bounce">
-                    {unreadCount}
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Table Feld (center) */}
-          <div className="flex-1 flex flex-col items-center justify-between p-2 landscape:p-1.5 landscape:pb-1 sm:p-4 pb-2 z-10 min-h-0">
-            {/* Opponent Bar */}
-            <div className="w-full max-w-4xl flex justify-center items-center gap-[clamp(4px,1.2vw,16px)] flex-wrap landscape:flex-nowrap overflow-x-auto mb-1 sm:mb-2 px-1 z-10 shrink-0">
-              {players.filter(p => p.player_id !== user?.id || isSpectator).map(opp => {
-                const oppRp = roundPlayers.find(p => p.player_id === opp.player_id);
-                const isOppTurn = round.current_turn_player_id === opp.player_id;
-                const activeEmojisForOpp = floatingEmojis.filter(e => e.senderId === opp.player_id);
-                const isOppOffline = opp.player_id !== user?.id && !onlinePlayerIds.includes(opp.player_id);
-
-                return (
-                  <motion.div
-                    key={opp.id}
-                    layout
-                    animate={{
-                      scale: isOppTurn ? 1.05 : 1,
-                      borderColor: isOppTurn ? "rgba(16, 185, 129, 0.4)" : "rgba(255, 255, 255, 0.1)"
-                    }}
-                    transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                    className="px-[clamp(6px,1.2vw,12px)] py-[clamp(3px,0.8vh,8px)] rounded-[clamp(6px,1vw,12px)] bg-black/50 border border-white/10 relative flex flex-col justify-between min-w-[clamp(80px,18vw,120px)] max-w-[clamp(95px,22vw,140px)] shrink-0"
-                  >
-                    {/* Glowing Turn Border */}
-                    {isOppTurn && (
-                      <motion.div
-                        layoutId="active-turn-glow"
-                        className="absolute inset-0 rounded-xl ring-2 ring-emerald-500 -z-10"
-                        animate={{
-                          boxShadow: [
-                            "0 0 0px 0px rgba(16, 185, 129, 0)",
-                            "0 0 10px 4px rgba(16, 185, 129, 0.35)",
-                            "0 0 0px 0px rgba(16, 185, 129, 0)"
-                          ]
-                        }}
-                        transition={{
-                          boxShadow: { repeat: Infinity, duration: 1.8, ease: "easeInOut" }
-                        }}
-                      />
-                    )}
-
-                    {/* Floating Emojis */}
-                    <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none z-50">
-                      <AnimatePresence>
-                        {activeEmojisForOpp.map(fe => (
-                          <motion.div
-                            key={fe.id}
-                            initial={{ opacity: 0, y: 10, scale: 0.5 }}
-                            animate={{
-                              opacity: [0, 1, 1, 0],
-                              y: [10, -10, -25, -40],
-                              scale: [0.5, 1.4, 1.4, 0.9]
-                            }}
-                            exit={{ opacity: 0 }}
-                            transition={{ duration: 2.0, times: [0, 0.15, 0.8, 1], ease: "easeOut" }}
-                            className="text-2xl filter drop-shadow-[0_4px_6px_rgba(0,0,0,0.5)]"
-                          >
-                            {fe.emoji}
-                          </motion.div>
-                        ))}
-                      </AnimatePresence>
-                    </div>
-                    <div className="flex items-center justify-between gap-2 sm:gap-4">
-                      <div className="text-[clamp(10px,1.2vw,12px)] font-bold truncate max-w-[clamp(50px,11vw,80px)]">{opp.name}</div>
-                      {(opp.status === "disconnected" || isOppOffline) && isAdmin && (
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => handleAdminKick(opp.player_id, "DROP")}
-                            className="text-[9px] bg-amber-500/20 text-amber-400 px-1 rounded border border-amber-500/30 min-h-[20px] flex items-center"
-                            title="Force Drop"
-                          >
-                            Drop
-                          </button>
-                          <button
-                            onClick={() => handleAdminKick(opp.player_id, "ELIMINATE")}
-                            className="text-[9px] bg-red-500/20 text-red-400 px-1 rounded border border-red-500/30 min-h-[20px] flex items-center"
-                            title="Kick"
-                          >
-                            Kick
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-[clamp(8px,1vw,10px)] text-slate-400 mt-0.5 flex items-center gap-1 justify-between">
-                      <span>Score: {opp.total_score}</span>
-                      <span>•</span>
-                      <span className="font-mono text-emerald-300">
-                        {opp.status === "eliminated"
-                          ? "ELIMINATED"
-                          : (opp.status === "disconnected" || isOppOffline)
-                            ? getTimeoutText(opp)
-                            : (oppRp?.status === "active" ? "🎴 13" : oppRp?.status.replace("_", " ").toUpperCase() || "Spectating")
-                        }
-                      </span>
-                    </div>
-                  </motion.div>
-                );
-              })}
-            </div>
-
-            {/* Deck Piles Center Wrapper */}
-            <div className="flex-grow flex items-center justify-center my-auto py-2 sm:py-4 min-h-0 min-h-[110px] landscape:min-h-[85px] shrink-0">
-              {/* Deck Piles Center */}
-              <div className="flex gap-[clamp(24px,6vw,48px)] landscape:gap-[clamp(16px,4vw,32px)] items-center justify-center">
-                {/* Draw Pile (face-down) */}
-                <div className="text-center">
-                  <motion.div
-                    onClick={handleDrawCard}
-                    whileHover={isMyTurn && !myRoundState?.has_drawn_this_turn ? { y: -4, scale: 1.03 } : {}}
-                    whileTap={isMyTurn && !myRoundState?.has_drawn_this_turn ? { scale: 0.95 } : {}}
-                    animate={isMyTurn && !myRoundState?.has_drawn_this_turn ? {
-                      boxShadow: [
-                        "0 0 0px 0px rgba(16, 185, 129, 0.2)",
-                        "0 0 12px 6px rgba(16, 185, 129, 0.5)",
-                        "0 0 0px 0px rgba(16, 185, 129, 0.2)"
-                      ],
-                      scale: [1, 1.02, 1]
-                    } : {}}
-                    transition={isMyTurn && !myRoundState?.has_drawn_this_turn ? {
-                      boxShadow: { repeat: Infinity, duration: 2, ease: "easeInOut" },
-                      scale: { repeat: Infinity, duration: 2, ease: "easeInOut" }
-                    } : {}}
-                    className={`w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] rounded bg-[var(--gradient-card-back)] border border-white/20 shadow-lg cursor-pointer flex items-center justify-center select-none relative ${isMyTurn && !myRoundState?.has_drawn_this_turn
-                      ? "ring-2 ring-emerald-400"
-                      : "opacity-80"
-                      }`}
-                  >
-                    <div className="text-xl font-bold text-white/40">♣♠</div>
-                  </motion.div>
-                  <span className="text-[10px] text-white/50 mt-1 block">Draw Pile</span>
-                </div>
-
-                {/* Discard Pile (face-up) */}
-                <div className="text-center">
-                  {round.discard_pile && round.discard_pile.length > 0 ? (
-                    <div className="relative w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] select-none">
-                      {round.discard_pile.slice(-3).map((card, idx, arr) => {
-                        const isTopCard = idx === arr.length - 1;
-
-                        // Deterministic rotation based on card id hash to look scattered but stay static
-                        const charCodeSum = card.id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                        const rotation = ((charCodeSum % 15) - 7.5);
-                        const offsetIdx = idx - (arr.length - 1); // -2, -1, 0
-                        const xOffset = offsetIdx * 2.5;
-                        const yOffset = offsetIdx * 1.5;
-
-                        return (
-                          <motion.div
-                            key={card.id}
-                            layoutId={`card-${card.id}`}
-                            onClick={isTopCard ? handlePickDiscard : undefined}
-                            initial={isTopCard ? { scale: 0.8, rotate: 0 } : false}
-                            animate={{
-                              scale: 1,
-                              rotate: rotation,
-                              x: xOffset,
-                              y: yOffset,
-                              boxShadow: isTopCard
-                                ? "0 10px 15px -3px rgba(0, 0, 0, 0.3)"
-                                : "0 4px 6px -2px rgba(0, 0, 0, 0.2)",
-                              zIndex: 10 + idx
-                            }}
-                            whileHover={isTopCard && isMyTurn && !myRoundState?.has_drawn_this_turn ? { y: yOffset - 4, scale: 1.03 } : {}}
-                            whileTap={isTopCard && isMyTurn && !myRoundState?.has_drawn_this_turn ? { scale: 0.95 } : {}}
-                            transition={{ type: "spring", stiffness: 260, damping: 20 }}
-                            className={`w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] rounded bg-white border border-gray-200 text-black absolute inset-0 flex flex-col justify-between p-1.5 select-none shadow-md ${isTopCard && isMyTurn && !myRoundState?.has_drawn_this_turn
-                              ? "ring-2 ring-emerald-400 cursor-pointer"
-                              : isTopCard ? "cursor-pointer" : "pointer-events-none"
-                              } ${isTopCard ? "opacity-100" : "opacity-70"}`}
-                          >
-                            {/* Card Corners */}
-                            <div className="flex items-center gap-0.5 leading-none select-none">
-                              <span className={`text-[clamp(16px,2.5vh,20px)] landscape:text-[clamp(13px,3vh,16px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                                {cardRankName(card.rank)}
-                              </span>
-                              {card.suit !== Suit.JOKER && (
-                                <span className={`text-[clamp(12px,1.8vh,15px)] landscape:text-[clamp(10px,2.2vh,12px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                                  {cardSuitSymbol(card.suit)}
-                                </span>
-                              )}
-                            </div>
-
-                            <div className={`text-[clamp(24px,3.5vh,36px)] landscape:text-[clamp(16px,3.5vh,22px)] text-center font-bold self-center leading-none ${cardSuitColor(card.suit)}`}>
-                              {cardSuitSymbol(card.suit)}
-                            </div>
-
-                            <div className="flex items-center gap-0.5 scale-y-[-1] scale-x-[-1] self-end leading-none">
-                              <span className={`text-[clamp(16px,2.5vh,20px)] landscape:text-[clamp(13px,3vh,16px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                                {cardRankName(card.rank)}
-                              </span>
-                              {card.suit !== Suit.JOKER && (
-                                <span className={`text-[clamp(12px,1.8vh,15px)] landscape:text-[clamp(10px,2.2vh,12px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                                  {cardSuitSymbol(card.suit)}
-                                </span>
-                              )}
-                            </div>
-                          </motion.div>
-
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="w-[clamp(60px,8.5vh,76px)] h-[clamp(90px,12.7vh,114px)] landscape:w-[clamp(42px,10vh,56px)] landscape:h-[clamp(62px,15vh,84px)] rounded border border-dashed border-white/20 flex items-center justify-center">
-                      <span className="text-[10px] text-white/20">Empty</span>
-                    </div>
-                  )}
-                  <span className="text-[10px] text-white/50 mt-1 block">Discard Pile</span>
-                </div>
-              </div>
-            </div>
-
-
-          </div>
-
-          {/* Bottom Card Holder UI / Observer Mode Panel */}
-          {isSpectator ? (
-            <div className="w-full bg-slate-900/95 backdrop-blur-md border-t border-emerald-500/20 p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0">
+        <>
+        <GameScreen
+          betAmount={room.bet_amount}
+          roundNumber={round.round_number}
+          roundStatus={round.status}
+          wildJoker={round.wild_joker}
+          currentTurnPlayerId={round.current_turn_player_id}
+          turnOrderIndex={round.turn_order_index}
+          discardPile={round.discard_pile || []}
+          players={players}
+          roundPlayers={roundPlayers}
+          userId={user?.id}
+          isAdmin={isAdmin}
+          isMyTurn={isMyTurn}
+          isSpectator={isSpectator}
+          onlinePlayerIds={onlinePlayerIds}
+          floatingEmojis={floatingEmojis}
+          myHand={myHand}
+          selectedCards={selectedCards}
+          myTotalScore={me?.total_score ?? 0}
+          hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
+          onQuit={handleQuitGame}
+          onDrawCard={handleDrawCard}
+          onPickDiscard={handlePickDiscard}
+          onDiscard={handleDiscardCard}
+          onDeclareShow={handleDeclareShow}
+          onDropFirst={() => handleDrop("FIRST")}
+          onDropSecond={() => handleDrop("SECOND")}
+          onCardClick={handleCardClick}
+          onReorderHand={setMyHand}
+          onAdminKick={handleAdminKick}
+          getTimeoutText={getTimeoutText}
+          soundOn={soundOn}
+          vibrationOn={vibrationOn}
+          onToggleSound={toggleSound}
+          onToggleVibration={toggleVibration}
+          onOpenChat={() => { setIsChatOpen(true); setUnreadCount(0); }}
+          unreadCount={unreadCount}
+          spectatorContent={
+            <div className="w-full bg-[#0D1B2A]/95 backdrop-blur-md border-t border-emerald-500/20 p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0">
               <div className="flex flex-col sm:flex-row items-center justify-between w-full max-w-4xl gap-4">
-                {/* Status & Badge */}
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
                     <svg className="w-6 h-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -3179,242 +2915,48 @@ export default function RoomPage() {
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs uppercase font-bold tracking-wider text-emerald-400 font-[Outfit]">Observer Mode</span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <span className="text-[14px] uppercase font-bold tracking-wider text-emerald-400">Observer Mode</span>
+                      <span className="px-2 py-0.5 rounded-full text-[12px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
                         {me?.status === "eliminated"
                           ? `Eliminated (Score: ${me.total_score})`
                           : "Spectating Round"}
                       </span>
                     </div>
-                    <p className="text-xs text-[var(--color-text-secondary)] mt-0.5 max-w-md">
+                    <p className="text-[14px] text-white/50 mt-0.5 max-w-md">
                       {me?.status === "eliminated"
-                        ? "You have been eliminated from the game table. You can still chat, send reactions, and watch the remaining players."
-                        : "You joined mid-round or are spectating. You will be able to join the table when the next round starts."}
+                        ? "You have been eliminated from the game table. You can still chat, send reactions, and watch."
+                        : "You joined mid-round. You'll join when the next round starts."}
                     </p>
                   </div>
                 </div>
-
-                {/* Engagement / Actions */}
                 <div className="flex items-center gap-4 shrink-0">
-
-
-                  {/* Chat shortcut */}
+                  {["😂", "🔥", "👍", "💬"].map((emoji) => (
+                    <button
+                      key={emoji}
+                      onClick={() => sendEmojiReaction(emoji)}
+                      type="button"
+                      className="text-2xl hover:scale-125 active:scale-95 transition-transform p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
                   <button
-                    onClick={() => {
-                      setIsChatOpen(true);
-                      setUnreadCount(0);
-                    }}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold shadow-md transition-colors flex items-center gap-1.5"
+                    onClick={() => { setIsChatOpen(true); setUnreadCount(0); }}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-md transition-colors flex items-center gap-1.5 min-h-[44px]"
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
                     Chat
                   </button>
                 </div>
               </div>
             </div>
-          ) : (
-            <div className={`w-full bg-slate-900/90 backdrop-blur-md border-t px-2.5 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] landscape:pb-1.5 pt-3 landscape:pt-1.5 sm:p-3 sm:pt-4 flex flex-col z-30 transition-colors duration-300 ${isMyTurn
-              ? "border-emerald-500/40 shadow-[0_-8px_20px_rgba(16,185,129,0.15)]"
-              : "border-white/10"
-              } overflow-visible shrink-0`}>
-
-
-              {/* Flex container that handles landscape side-by-side layout */}
-              <div className="flex flex-col landscape:flex-row landscape:items-center landscape:justify-between gap-2 landscape:gap-4 w-full max-w-6xl mx-auto relative">
-                {/* Control buttons */}
-                <div className="order-1 landscape:order-2 flex justify-between items-center landscape:flex-col landscape:justify-center landscape:items-stretch gap-2 shrink-0 w-full landscape:w-auto mt-1 mb-2 landscape:mb-0 landscape:mt-0">
-                  <div className="hidden sm:flex landscape:hidden gap-2">
-                    <span className="text-[10px] text-[var(--color-text-secondary)] bg-slate-950/40 border border-white/5 px-2.5 py-1.5 rounded-lg font-medium select-none">
-                      Drag cards to reorder
-                    </span>
-                  </div>
-
-                  <div className="flex landscape:flex-col gap-2 landscape:gap-1.5 ml-auto landscape:ml-0">
-                    {isMyTurn && !myRoundState?.has_drawn_this_turn && (
-                      <>
-                        {round.turn_order_index < players.length ? (
-                          (me?.total_score ?? 0) + 20 < 250 && (
-                            <button
-                              onClick={() => handleDrop("FIRST")}
-                              className="px-4 py-2 landscape:py-1.5 rounded-xl text-xs landscape:text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-                            >
-                              First Drop
-                            </button>
-                          )
-                        ) : (
-                          (me?.total_score ?? 0) + 40 < 250 && (
-                            <button
-                              onClick={() => handleDrop("SECOND")}
-                              className="px-4 py-2 landscape:py-1.5 rounded-xl text-xs landscape:text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 min-h-[44px] landscape:min-h-[36px] flex items-center justify-center"
-                            >
-                              Second Drop
-                            </button>
-                          )
-                        )}
-                      </>
-                    )}
-
-                    {isMyTurn && myRoundState?.has_drawn_this_turn && (
-                      <>
-                        <button
-                          onClick={() => {
-                            if (selectedCards.length !== 1) {
-                              toast.error("Select exactly 1 card to discard.");
-                              return;
-                            }
-                            const cardToDiscard = myRoundState?.hand?.find(c => c.id === selectedCards[0]);
-                            if (cardToDiscard) handleDiscardCard(cardToDiscard);
-                          }}
-                          disabled={selectedCards.length !== 1}
-                          className="px-5 landscape:px-4 py-2.5 landscape:py-1.5 rounded-xl text-xs landscape:text-[10px] font-bold bg-amber-600 disabled:opacity-50 text-white min-h-[44px] landscape:min-h-[36px] flex items-center justify-center shadow-md"
-                        >
-                          Discard
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (selectedCards.length !== 1) {
-                              toast.error("Select exactly 1 card to designate as the show card.");
-                              return;
-                            }
-                            const showCard = myRoundState?.hand?.find(c => c.id === selectedCards[0]);
-                            if (showCard) handleDeclareShow(showCard);
-                          }}
-                          disabled={selectedCards.length !== 1}
-                          className="px-5 landscape:px-4 py-2.5 landscape:py-1.5 rounded-xl text-xs landscape:text-[10px] font-bold bg-emerald-600 disabled:opacity-50 text-white min-h-[44px] landscape:min-h-[36px] flex items-center justify-center shadow-md"
-                        >
-                          Show
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Cards Hand */}
-                <div className="order-2 landscape:order-1 flex-1 min-w-0">
-                  <Reorder.Group
-                    axis="x"
-                    values={myHand}
-                    onReorder={setMyHand}
-                    as="div"
-                    data-hand-container="true"
-                    className="flex bg-slate-950/40 px-3 pb-3 pt-7 landscape:pt-6 rounded-2xl border border-white/5 gap-0 overflow-x-auto min-h-[clamp(118px,17vh,140px)] landscape:min-h-[clamp(80px,20vh,100px)] items-end justify-start md:justify-center w-full max-w-5xl mx-auto relative overflow-y-visible"
-                  >
-                    {myHand.map((card, cardIdx) => {
-                      const isSelected = selectedCards.includes(card.id);
-                      const globalCardIndex = myRoundState?.hand
-                        ? myRoundState.hand.findIndex(c => c.id === card.id)
-                        : 0;
-                      return (
-                        <Reorder.Item
-                          key={card.id}
-                          value={card}
-                          as="div"
-                          id={`card-hand-${card.id}`}
-                          onTap={() => handleCardClick(card.id)}
-                          data-card-idx={cardIdx}
-                          dragListener={!isSpectator}
-                          style={{ zIndex: cardIdx }}
-                          initial={round?.status === "dealing" ? { opacity: 0, scale: 0.6, x: 0, y: -250 } : false}
-                          animate={{
-                            opacity: 1,
-                            scale: 1,
-                            y: isSelected ? -10 : 0,
-                            boxShadow: isSelected
-                              ? "0 0 15px 5px rgba(16, 185, 129, 0.5)"
-                              : "0 2px 4px 0 rgba(0, 0, 0, 0.15)"
-                          }}
-                          whileHover={{ y: isSelected ? -15 : -5, scale: 1.02, zIndex: 50 }}
-                          whileTap={{ scale: 0.95 }}
-                          transition={{
-                            y: { type: "tween", duration: 0.15, ease: "easeOut" },
-                            boxShadow: { type: "tween", duration: 0.15, ease: "easeOut" },
-                            default: {
-                              type: "spring",
-                              stiffness: 360,
-                              damping: 26,
-                              delay: round?.status === "dealing" ? globalCardIndex * 0.05 : 0
-                            }
-                          }}
-                          className={`w-[clamp(64px,9.8vh,84px)] h-[clamp(96px,14vh,120px)] landscape:w-[clamp(56px,14vh,74px)] landscape:h-[clamp(80px,20vh,110px)] rounded-md bg-white border border-gray-200 text-black cursor-pointer select-none flex flex-col justify-between p-1.5 shadow-sm shrink-0 relative hand-card ${isSelected ? "ring-2 ring-emerald-500" : ""}`}
-                        >
-                          {/* Top-left corner */}
-                          <div className="flex items-center gap-0.5 leading-none select-none">
-                            <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                              {cardRankName(card.rank)}
-                            </span>
-                            {card.suit !== Suit.JOKER && (
-                              <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                                {cardSuitSymbol(card.suit)}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Center symbol */}
-                          <div className={`text-[clamp(22px,3.2vh,28px)] landscape:text-[clamp(18px,4.5vh,24px)] text-center font-bold self-center leading-none select-none ${cardSuitColor(card.suit)}`}>
-                            {cardSuitSymbol(card.suit)}
-                          </div>
-
-                          {/* Bottom corner */}
-                          <div className="flex justify-between items-end leading-none w-full mt-auto">
-                            <span className="text-[7px] text-gray-400 font-mono leading-none">
-                              {card.deckIndex === 0 ? "A" : card.deckIndex === 1 ? "B" : "C"}
-                            </span>
-                            <div className="flex items-center gap-0.5 scale-y-[-1] scale-x-[-1] leading-none">
-                              <span className={`text-[clamp(18px,2.8vh,24px)] landscape:text-[clamp(16px,4vh,20px)] font-black leading-none ${cardSuitColor(card.suit)}`}>
-                                {cardRankName(card.rank)}
-                              </span>
-                              {card.suit !== Suit.JOKER && (
-                                <span className={`text-[clamp(14px,2.2vh,18px)] landscape:text-[clamp(12px,3vh,15px)] font-bold leading-none ${cardSuitColor(card.suit)}`}>
-                                  {cardSuitSymbol(card.suit)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </Reorder.Item>
-                      );
-                    })}
-                  </Reorder.Group>
-                </div>
-              </div>
-
-              <div className="text-center text-[10px] text-[var(--color-text-muted)] mt-1 font-semibold">
-                {isMyTurn
-                  ? (myRoundState?.has_drawn_this_turn ? "Select 1 card to Discard or Show" : "It's your turn! Draw a card from pile or discard")
-                  : `Waiting for ${players.find(p => p.player_id === round.current_turn_player_id)?.name || "next player"}...`
-                }
-              </div>
-            </div>
-          )}
-          <div className="fixed bottom-36 left-1/2 -translate-x-1/2 pointer-events-none z-50 flex flex-col items-center">
-            <AnimatePresence>
-              {floatingEmojis.filter(e => e.senderId === user?.id).map(fe => (
-                <motion.div
-                  key={fe.id}
-                  initial={{ opacity: 0, y: 10, scale: 0.5 }}
-                  animate={{
-                    opacity: [0, 1, 1, 0],
-                    y: [10, -15, -35, -55],
-                    scale: [0.5, 1.5, 1.5, 1.0]
-                  }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 2.0, times: [0, 0.15, 0.8, 1], ease: "easeOut" }}
-                  className="text-3xl filter drop-shadow-[0_4px_6px_rgba(0,0,0,0.5)]"
-                >
-                  {fe.emoji}
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
+          }
+        />
 
           {/* Chat Drawer Overlay */}
           <AnimatePresence>
             {isChatOpen && (
-              <div className="absolute inset-0 bg-black/40 z-50 flex justify-end">
-                {/* Backdrop to close */}
+              <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
                 <div className="flex-1" onClick={() => setIsChatOpen(false)} />
-
                 <motion.div
                   initial={{ x: "100%" }}
                   animate={{ x: 0 }}
@@ -3423,7 +2965,7 @@ export default function RoomPage() {
                   className="w-full max-w-sm bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4 relative"
                 >
                   <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
-                    <h3 className="font-bold text-lg font-[Outfit] text-emerald-400">Room Chat</h3>
+                    <h3 className="font-bold text-lg font-[Outfit] text-[var(--color-gold)]">Room Chat</h3>
                     <button
                       onClick={() => setIsChatOpen(false)}
                       className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
@@ -3433,7 +2975,6 @@ export default function RoomPage() {
                       </svg>
                     </button>
                   </div>
-
                   <div className="flex-1 min-h-0">
                     <ChatContent
                       chatMessages={chatMessages}
@@ -3446,173 +2987,34 @@ export default function RoomPage() {
               </div>
             )}
           </AnimatePresence>
-
-
-        </div>
+        </>
       )}
 
       {/* 3. SCOREBOARD / BETWEEN ROUNDS STATE */}
       {room && room.status === "active" && round && round.status === "completed" && (
-        <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
-          <motion.div
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="w-full max-w-xl p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-xl max-h-[90dvh] overflow-y-auto"
-          >
-            <h2 className="text-2xl font-bold font-[Outfit] text-center mb-2">Round Scoreboard</h2>
-            <p className="text-center text-sm text-[var(--color-text-secondary)] mb-6">
-              Round {round.round_number} is completed. Review scores below.
-            </p>
-
-            {/* Scoreboard table */}
-            <div className="space-y-3 mb-6">
-              {players.map(p => {
-                const rp = roundPlayers.find(x => x.player_id === p.player_id);
-                return (
-                  <div
-                    key={p.id}
-                    className={`p-3.5 rounded-xl border flex justify-between items-center ${p.status === "eliminated"
-                      ? "bg-red-500/5 border-red-500/20 opacity-70"
-                      : "bg-[var(--color-bg-secondary)] border-[var(--color-border-default)]"
-                      }`}
-                  >
-                    <div>
-                      <div className="font-semibold text-sm flex items-center gap-2">
-                        {p.name}
-                        {p.status === "eliminated" && (
-                          <span className="text-[9px] bg-red-500/10 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded">ELIMINATED</span>
-                        )}
-                        {p.opted_leave_share && (
-                          <span className="text-[9px] bg-sky-500/10 text-sky-400 border border-sky-500/30 px-1.5 py-0.5 rounded">LEAVE SHARE</span>
-                        )}
-                        {(p.status === "disconnected" || (p.player_id !== user?.id && !onlinePlayerIds.includes(p.player_id))) && (
-                          <span className="text-[9px] bg-red-500/10 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded animate-pulse">OFFLINE</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-[var(--color-text-muted)] mt-1">
-                        Status this round: <span className="font-mono text-emerald-400">
-                          {p.status === "eliminated"
-                            ? "ELIMINATED"
-                            : rp?.status?.toUpperCase()?.replace("_", " ")}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <div className="text-sm font-semibold font-mono text-amber-500">
-                        +{rp?.score_this_round ?? 0} pts
-                      </div>
-                      <div className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-                        Total: {p.total_score} / 250
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Leave Share Vote Area */}
-            {players.some(p => p.status === "eliminated") && me && me.status !== "eliminated" && (
-              <div className="p-4 rounded-xl bg-sky-500/5 border border-sky-500/20 mb-6">
-                <h3 className="font-semibold text-xs text-sky-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5" /> Leave Share Vote
-                </h3>
-                <p className="text-xs text-[var(--color-text-secondary)] mb-3 leading-relaxed">
-                  Propose to activate Leave Share for all active players. If approved by all active players, you won't pay the winner if you lose, but you won't get paid by other opted-in players. Locked once set.
-                </p>
-                <button
-                  onClick={initiateLeaveShareVote}
-                  disabled={me.opted_leave_share || !!activeLeaveShareVote}
-                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${me.opted_leave_share
-                    ? "bg-sky-500/10 text-sky-400 border-sky-500/30 cursor-not-allowed"
-                    : activeLeaveShareVote
-                      ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
-                      : "bg-sky-600 hover:bg-sky-500 text-white border-transparent"
-                    }`}
-                >
-                  {me.opted_leave_share
-                    ? "Leave Share Activated (Locked)"
-                    : activeLeaveShareVote
-                      ? "Vote in Progress..."
-                      : "Propose Leave Share"}
-                </button>
-              </div>
-            )}
-
-            {/* Mutual Quit Vote Area */}
-            {me && me.status !== "eliminated" && (
-              <div className="p-4 rounded-xl bg-amber-500/5 border border-amber-500/20 mb-6">
-                <h3 className="font-semibold text-xs text-amber-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5" /> Mutual Quit Vote
-                </h3>
-                <p className="text-xs text-[var(--color-text-secondary)] mb-3 leading-relaxed">
-                  Propose a mutual quit to end the game and split the prize pool equally among all remaining active players. Requires unanimous agreement.
-                </p>
-                <button
-                  onClick={initiateMutualQuit}
-                  disabled={!!activeQuitVote}
-                  className={`w-full py-2.5 rounded-lg text-xs font-bold transition-all border ${activeQuitVote
-                    ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
-                    : "bg-amber-600 hover:bg-amber-500 text-white border-transparent"
-                    }`}
-                >
-                  {activeQuitVote ? "Vote in Progress..." : "Propose Mutual Quit (Split)"}
-                </button>
-              </div>
-            )}
-
-            {/* Score Trend Chart */}
-            {scoreHistory.length > 1 && (
-              <div className="p-3 rounded-xl bg-slate-950/20 border border-[var(--color-border-default)] mb-4">
-                <button
-                  onClick={() => setIsChartVisible(!isChartVisible)}
-                  className="w-full flex justify-between items-center text-xs font-semibold text-[var(--color-text-secondary)] hover:text-white uppercase tracking-wider"
-                >
-                  <span>Score Trend Progress</span>
-                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded border border-white/5">
-                    {isChartVisible ? "Hide Chart" : "Show Chart"}
-                  </span>
-                </button>
-                {isChartVisible && (
-                  <div className="mt-3 pt-3 border-t border-white/5">
-                    <ScoreTrendChart scoreHistory={scoreHistory} players={players} />
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Next Round Control */}
-            {isAdmin ? (
-              <button
-                onClick={() => startNewRound(round.round_number + 1)}
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-sm shadow-lg"
-              >
-                Start Round {round.round_number + 1}
-              </button>
-            ) : (
-              <div className="text-center text-xs text-[var(--color-text-muted)] italic animate-pulse">
-                Waiting for host to start the next round...
-              </div>
-            )}
-
-            {/* Pause Game Control */}
-            {me && me.status !== "eliminated" && (
-              <div className="mt-4 border-t border-white/5 pt-4">
-                <button
-                  onClick={initiatePauseVote}
-                  disabled={!!activePauseVote}
-                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all border ${activePauseVote
-                    ? "bg-amber-500/10 text-amber-400 border-amber-500/30 cursor-not-allowed"
-                    : "bg-slate-800 hover:bg-slate-700 text-white border-transparent"
-                    }`}
-                >
-                  {activePauseVote ? "Pause Vote in Progress..." : "Propose Pause Game"}
-                </button>
-              </div>
-            )}
-          </motion.div>
-        </div>
+        <PostRoundModal
+          round={{ round_number: round.round_number, wild_joker: round.wild_joker }}
+          players={players}
+          roundPlayers={roundPlayers}
+          userId={user?.id}
+          isAdmin={isAdmin}
+          onlinePlayerIds={onlinePlayerIds}
+          scoreHistory={scoreHistory}
+          onStartNextRound={() => startNewRound(round.round_number + 1)}
+          me={me}
+          activeLeaveShareVote={activeLeaveShareVote}
+          activeQuitVote={activeQuitVote}
+          activePauseVote={activePauseVote}
+          onInitiateLeaveShareVote={initiateLeaveShareVote}
+          onInitiateMutualQuit={initiateMutualQuit}
+          onInitiatePause={initiatePauseVote}
+          ScoreTrendChart={ScoreTrendChart}
+          isChartVisible={isChartVisible}
+          onToggleChart={() => setIsChartVisible(!isChartVisible)}
+        />
       )}
+
+
 
       {/* 4. GAME ENDED / PAYMENT SETTLEMENT STATE */}
       {room && room.status === "finished" && (
@@ -4265,7 +3667,7 @@ function ChatContent({
       <div className="mt-3 border-t border-[var(--color-border-default)] pt-3 flex flex-col gap-2 bg-[var(--color-bg-card)]">
         {/* Quick emojis */}
         <div className="flex justify-between px-1">
-          {["😂", "🔥", "👍", "🃏", "😢", "😮", "😡", "🎉"].map((emoji) => (
+          {["😂", "🔥", "👍", "💬", "😢", "😮", "😡", "🎉"].map((emoji) => (
             <button
               key={emoji}
               onClick={() => onSendReaction(emoji)}

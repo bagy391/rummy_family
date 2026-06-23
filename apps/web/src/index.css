@@ -1,29 +1,35 @@
 @import "tailwindcss";
 
 /* ========================================
-   FAMILY RUMMY — DESIGN SYSTEM
-   Premium dark theme with rich card-game aesthetics
+   FAMILY RUMMY — PREMIUM DESIGN SYSTEM
+   Dark poker-felt aesthetic with gold accents
    ======================================== */
 
 /* ---------- Custom Theme ---------- */
 @theme {
-  /* Color Palette — Rich dark with emerald accents */
-  --color-bg-primary: #0a0e1a;
-  --color-bg-secondary: #111827;
-  --color-bg-card: #1a1f35;
-  --color-bg-elevated: #1e2642;
-  --color-bg-glass: rgba(30, 38, 66, 0.7);
-  --color-bg-table: #0d4a2d;
-  --color-bg-table-felt: #116b3e;
+  /* Color Palette — Slate blue felt base with copper/gold accents */
+  --color-bg-primary: #0D1B2A;
+  --color-bg-secondary: #111d2e;
+  --color-bg-card: #152238;
+  --color-bg-elevated: #1a2a45;
+  --color-bg-glass: rgba(21, 34, 56, 0.75);
+  --color-bg-table: #355A6D;
+  --color-bg-table-felt: #528399;
 
   --color-text-primary: #f1f5f9;
   --color-text-secondary: #94a3b8;
   --color-text-muted: #64748b;
-  --color-text-accent: #34d399;
+  --color-text-accent: #F5A623;
 
-  --color-border-default: #1e293b;
-  --color-border-light: #334155;
-  --color-border-accent: #059669;
+  --color-border-default: #1e3350;
+  --color-border-light: #2a4060;
+  --color-border-accent: #F5A623;
+
+  /* Copper Palette */
+  --color-copper-base: #8A4C32;
+  --color-copper-light: #A65E3E;
+  --color-copper-dark: #6C3720;
+  --color-copper-glow: rgba(166, 94, 62, 0.35);
 
   /* Accent Colors */
   --color-emerald: #10b981;
@@ -31,9 +37,10 @@
   --color-emerald-dark: #059669;
   --color-emerald-glow: rgba(16, 185, 129, 0.3);
 
-  --color-gold: #f59e0b;
-  --color-gold-light: #fbbf24;
-  --color-gold-dark: #d97706;
+  --color-gold: #F5A623;
+  --color-gold-light: #f7bc4f;
+  --color-gold-dark: #d4901a;
+  --color-gold-glow: rgba(245, 166, 35, 0.35);
 
   --color-ruby: #ef4444;
   --color-ruby-light: #f87171;
@@ -44,19 +51,21 @@
 
   /* Card Suit Colors */
   --color-suit-hearts: #ef4444;
-  --color-suit-diamonds: #f97316;
-  --color-suit-clubs: #22c55e;
-  --color-suit-spades: #3b82f6;
+  --color-suit-diamonds: #ef4444;
+  --color-suit-clubs: #000000;
+  --color-suit-spades: #000000;
   --color-suit-joker: #a855f7;
 
   /* Gradients */
   --gradient-primary: linear-gradient(135deg, #059669, #10b981);
-  --gradient-gold: linear-gradient(135deg, #d97706, #f59e0b);
+  --gradient-gold: linear-gradient(135deg, #d4901a, #F5A623);
+  --gradient-copper: linear-gradient(135deg, #a65e3e, #864627);
   --gradient-ruby: linear-gradient(135deg, #dc2626, #ef4444);
-  --gradient-dark: linear-gradient(180deg, #0a0e1a, #111827);
-  --gradient-glass: linear-gradient(135deg, rgba(30, 38, 66, 0.8), rgba(15, 23, 42, 0.6));
-  --gradient-table: radial-gradient(ellipse at center, #116b3e 0%, #0d4a2d 50%, #083a22 100%);
-  --gradient-card-back: linear-gradient(135deg, #1e40af, #7c3aed);
+  --gradient-dark: linear-gradient(180deg, #0D1B2A, #0a1420);
+  --gradient-glass: linear-gradient(135deg, rgba(21, 34, 56, 0.85), rgba(13, 27, 42, 0.65));
+  --gradient-table: radial-gradient(ellipse at center, #528399 0%, #3e667d 55%, #2a4756 100%);
+  --gradient-card-back: linear-gradient(135deg, #b91c1c, #991b1b);
+
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -64,8 +73,10 @@
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.6);
   --shadow-glow: 0 0 20px rgba(16, 185, 129, 0.2);
+  --shadow-glow-gold: 0 0 20px var(--color-gold-glow);
   --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.5);
   --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-card-selected: 0 0 15px 5px var(--color-gold-glow);
 
   /* Spacing */
   --radius-sm: 0.375rem;
@@ -78,6 +89,7 @@
   /* Typography */
   --font-sans: 'Inter', 'system-ui', '-apple-system', sans-serif;
   --font-display: 'Outfit', 'Inter', sans-serif;
+  --font-score: 'Chakra Petch', 'Rajdhani', 'Inter', sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
   /* Transitions */
@@ -136,7 +148,7 @@
 
   /* Focus styles for accessibility */
   :focus-visible {
-    outline: 2px solid var(--color-emerald);
+    outline: 2px solid var(--color-gold);
     outline-offset: 2px;
   }
 
@@ -158,10 +170,18 @@
   }
 
   .glass-strong {
-    background: rgba(30, 38, 66, 0.9);
+    background: rgba(21, 34, 56, 0.92);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
     border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  .glass-panel {
+    background: rgba(21, 34, 56, 0.7);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
   }
 
   /* Glow effects */
@@ -171,8 +191,13 @@
   }
 
   .glow-gold {
-    box-shadow: 0 0 20px rgba(245, 158, 11, 0.3),
-                0 0 60px rgba(245, 158, 11, 0.1);
+    box-shadow: 0 0 20px var(--color-gold-glow),
+                0 0 60px rgba(245, 166, 35, 0.1);
+  }
+
+  .glow-gold-strong {
+    box-shadow: 0 0 12px 4px var(--color-gold-glow),
+                0 0 30px rgba(245, 166, 35, 0.15);
   }
 
   /* Card table felt texture */
@@ -246,6 +271,18 @@
   .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
   .safe-left { padding-left: env(safe-area-inset-left); }
   .safe-right { padding-right: env(safe-area-inset-right); }
+
+  /* Score font utility */
+  .font-score {
+    font-family: var(--font-score);
+  }
+
+  /* Discard drop zone active state */
+  .discard-drop-active {
+    box-shadow: 0 0 20px 8px rgba(245, 166, 35, 0.5),
+                0 0 40px rgba(245, 166, 35, 0.2);
+    border-color: var(--color-gold) !important;
+  }
 }
 
 /* ---------- Animations ---------- */
@@ -317,6 +354,11 @@
   }
 }
 
+@keyframes thinking-dots {
+  0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.2); }
+}
+
 /* Animation utility classes */
 .animate-deal { animation: card-deal 0.4s var(--transition-spring) both; }
 .animate-slide-up { animation: slide-up 0.3s ease-out both; }
@@ -352,9 +394,9 @@
 .hand-card {
   margin-left: var(--card-neg-margin) !important;
   position: relative !important;
+  flex-shrink: 0 !important;
 }
 
 .hand-card:first-child {
   margin-left: 0 !important;
 }
-

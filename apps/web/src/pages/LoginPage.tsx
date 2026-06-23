@@ -44,6 +44,7 @@ export default function LoginPage() {
           displayName: profile.name,
           upiId: profile.upi_id || "",
           avatarUrl: profile.avatar_url || undefined,
+          role: profile.role || "player",
         });
 
         setSession({

@@ -7,6 +7,7 @@ interface User {
   displayName: string;
   upiId: string;
   avatarUrl?: string;
+  role: string;
 }
 
 interface AuthState {

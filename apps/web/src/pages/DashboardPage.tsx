@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, Trophy, Plus, LogIn, User, Sparkles } from "lucide-react";
+import { LogOut, Trophy, Plus, LogIn, User, Sparkles, Lock } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { toast } from "sonner";
+import { decodeCleanUTF8 } from "@/lib/utils";
 
 interface GameStats {
   total_games_played: number;
@@ -61,13 +62,23 @@ export default function DashboardPage() {
         .limit(10);
 
       if (leaderboardData) {
-        const mapped = leaderboardData.map((x: any) => ({
-          player_id: x.player_id,
-          name: x.profiles?.name || "Player",
-          avatar_url: x.profiles?.avatar_url || null,
-          total_wins: x.total_wins,
-          earnings: parseFloat(x.earnings) || 0,
-        }));
+        const hostname = window.location.hostname;
+        const isLocalDev =
+          hostname === "localhost" ||
+          hostname === "127.0.0.1" ||
+          hostname.startsWith("192.168.") ||
+          hostname.startsWith("10.") ||
+          hostname.startsWith("172.");
+
+        const mapped = leaderboardData
+          .map((x: any) => ({
+            player_id: x.player_id,
+            name: decodeCleanUTF8(x.profiles?.name || "Player"),
+            avatar_url: x.profiles?.avatar_url || null,
+            total_wins: x.total_wins,
+            earnings: parseFloat(x.earnings) || 0,
+          }))
+          .filter((p: any) => isLocalDev || !p.name.toLowerCase().includes("test"));
         setLeaderboard(mapped);
       }
 
@@ -137,8 +148,8 @@ export default function DashboardPage() {
           roomCode: p.rooms?.room_code || "Unknown",
           payerId: p.payer_id,
           payeeId: p.payee_id,
-          payerName: p.payer?.name || "Player",
-          payeeName: p.payee?.name || "Player",
+          payerName: decodeCleanUTF8(p.payer?.name || "Player"),
+          payeeName: decodeCleanUTF8(p.payee?.name || "Player"),
           payeeUpi: p.payee?.upi_id || "",
           amount: parseFloat(p.amount) || 0,
           status: p.status,
@@ -205,6 +216,12 @@ export default function DashboardPage() {
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    const isHost = user.role === "host" || user.role === "admin";
+    if (!isHost) {
+      toast.error("Only authorized hosts can create rooms.");
+      return;
+    }
 
     setLoadingCreate(true);
 
@@ -432,33 +449,50 @@ export default function DashboardPage() {
           {/* Action Boxes */}
           <div className="grid sm:grid-cols-2 gap-4">
             {/* Create Room */}
-            <div className="p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)]">
-              <div className="flex items-center gap-2 mb-4">
-                <Plus className="w-5 h-5 text-emerald-400" />
-                <h3 className="font-bold font-[Outfit] text-lg">Create New Room</h3>
-              </div>
-              <form onSubmit={handleCreateRoom} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">
-                    Bet Amount (₹)
-                  </label>
-                  <input
-                    type="number"
-                    value={betAmount}
-                    onChange={(e) => setBetAmount(e.target.value)}
-                    placeholder="50"
-                    className="w-full px-3 py-2 text-sm rounded-xl bg-[var(--color-bg-default)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all"
-                  />
+            {(user?.role === "host" || user?.role === "admin") ? (
+              <div className="p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)]">
+                <div className="flex items-center gap-2 mb-4">
+                  <Plus className="w-5 h-5 text-emerald-400" />
+                  <h3 className="font-bold font-[Outfit] text-lg">Create New Room</h3>
                 </div>
-                <button
-                  type="submit"
-                  disabled={loadingCreate}
-                  className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-semibold text-sm shadow-md hover:scale-[1.01] transition-all"
-                >
-                  {loadingCreate ? "Creating..." : "Create Room"}
-                </button>
-              </form>
-            </div>
+                <form onSubmit={handleCreateRoom} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">
+                      Bet Amount (₹)
+                    </label>
+                    <input
+                      type="number"
+                      value={betAmount}
+                      onChange={(e) => setBetAmount(e.target.value)}
+                      placeholder="50"
+                      className="w-full px-3 py-2 text-sm rounded-xl bg-[var(--color-bg-default)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loadingCreate}
+                    className="w-full py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-semibold text-sm shadow-md hover:scale-[1.01] transition-all"
+                  >
+                    {loadingCreate ? "Creating..." : "Create Room"}
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] flex flex-col justify-between min-h-[220px]">
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <Lock className="w-5 h-5 text-amber-500" />
+                    <h3 className="font-bold font-[Outfit] text-lg text-white">Create New Room</h3>
+                  </div>
+                  <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed mt-2">
+                    Only authorized hosts can create rooms. Please contact the administrator to request host rights.
+                  </p>
+                </div>
+                <div className="text-[11px] text-amber-500/80 bg-amber-500/10 border border-amber-500/20 px-3 py-2 rounded-xl mt-4 font-semibold text-center select-none">
+                  Host Rights Required
+                </div>
+              </div>
+            )}
 
             {/* Join Room */}
             <div className="p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)]">
