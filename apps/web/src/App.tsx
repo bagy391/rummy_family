@@ -21,10 +21,14 @@ export default function App() {
   const setLoading = useAuthStore((s) => s.setLoading);
 
   useEffect(() => {
+    let active = true;
+
     // 1. Check current session on mount (once)
     const initAuth = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
+        if (!active) return;
+
         if (session) {
           setSession({
             accessToken: session.access_token,
@@ -35,6 +39,8 @@ export default function App() {
             .select("*")
             .eq("id", session.user.id)
             .single();
+
+          if (!active) return;
 
           if (profile) {
             setUser({
@@ -55,7 +61,9 @@ export default function App() {
       } catch (err) {
         console.error("Initial auth check failed:", err);
       } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     };
 
@@ -64,35 +72,46 @@ export default function App() {
     // 2. Listen to subsequent auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        if (session) {
-          setSession({
-            accessToken: session.access_token,
-            refreshToken: session.refresh_token,
-          });
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", session.user.id)
-            .single();
+        // Skip initial session event if we are already fetching it in initAuth
+        if (event === "INITIAL_SESSION") return;
+        if (!active) return;
 
-          if (profile) {
-            setUser({
-              id: profile.id,
-              email: profile.email,
-              displayName: decodeCleanUTF8(profile.name),
-              upiId: profile.upi_id || "",
-              avatarUrl: profile.avatar_url || undefined,
-              role: profile.role || "player",
+        try {
+          if (session) {
+            setSession({
+              accessToken: session.access_token,
+              refreshToken: session.refresh_token,
             });
+            const { data: profile } = await supabase
+              .from("profiles")
+              .select("*")
+              .eq("id", session.user.id)
+              .single();
+
+            if (!active) return;
+
+            if (profile) {
+              setUser({
+                id: profile.id,
+                email: profile.email,
+                displayName: decodeCleanUTF8(profile.name),
+                upiId: profile.upi_id || "",
+                avatarUrl: profile.avatar_url || undefined,
+                role: profile.role || "player",
+              });
+            }
+          } else if (event === "SIGNED_OUT") {
+            setUser(null);
+            setSession(null);
           }
-        } else if (event === "SIGNED_OUT") {
-          setUser(null);
-          setSession(null);
+        } catch (err) {
+          console.error("Auth state change query failed:", err);
         }
       }
     );
 
     return () => {
+      active = false;
       subscription.unsubscribe();
     };
   }, [setUser, setSession, setLoading]);

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { LogOut, Trophy, Plus, LogIn, User, Sparkles, Lock } from "lucide-react";
+import { LogOut, Trophy, Plus, LogIn, User, Sparkles, Lock, RefreshCw } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
 import { toast } from "sonner";
@@ -213,6 +213,34 @@ export default function DashboardPage() {
     navigate("/login");
   };
 
+  const handleHardRefresh = async () => {
+    try {
+      toast.info("Clearing cache and refreshing...");
+      
+      // Unregister Service Workers
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (const registration of registrations) {
+          await registration.unregister();
+        }
+      }
+      
+      // Clear Cache Storage
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        for (const key of keys) {
+          await caches.delete(key);
+        }
+      }
+      
+      // Force reload with cache busting query param
+      const cleanUrl = window.location.origin + window.location.pathname + '?cb=' + Date.now();
+      window.location.replace(cleanUrl);
+    } catch (err) {
+      window.location.reload();
+    }
+  };
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
@@ -387,6 +415,13 @@ export default function DashboardPage() {
             <User className="w-4 h-4 text-emerald-400" />
             <span>{user?.displayName}</span>
           </div>
+          <button
+            onClick={handleHardRefresh}
+            className="p-2 rounded-full hover:bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] hover:text-emerald-400 transition-colors"
+            title="Hard Refresh App"
+          >
+            <RefreshCw className="w-5 h-5" />
+          </button>
           <button 
             onClick={handleLogout}
             className="p-2 rounded-full hover:bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] hover:text-red-400 transition-colors"

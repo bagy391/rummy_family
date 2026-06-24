@@ -20,22 +20,25 @@ interface PlayingCardProps {
 const sizeClasses = {
   sm: {
     card: "w-[35px] h-[50px] sm:w-[42px] sm:h-[60px]",
-    rank: "text-[13px] sm:text-[16px] font-black",
-    suitSmall: "text-[10px] sm:text-[11px] font-black",
+    rank: "text-[17px] sm:text-[22px] font-black leading-none",
+    suitSmall: "text-[17px] sm:text-[22px] font-black leading-none",
+    suitHuge: "text-[22px] sm:text-[28px]",
     jokerText: "text-[9px]",
     padding: "p-0.5",
   },
   md: {
     card: "w-[clamp(65px,9vh,82px)] h-[clamp(96px,13.2vh,120px)] landscape:w-[clamp(46px,11vh,62px)] landscape:h-[clamp(68px,16.5vh,92px)]",
-    rank: "text-[clamp(19px,3vh,26px)] landscape:text-[clamp(15px,3.8vh,20px)] font-black",
-    suitSmall: "text-[clamp(12px,1.8vh,15px)] landscape:text-[clamp(10px,2.4vh,12px)] font-black",
+    rank: "text-[clamp(26px,3.8vh,34px)] landscape:text-[clamp(20px,4.5vh,26px)] font-black leading-none",
+    suitSmall: "text-[clamp(26px,3.8vh,34px)] landscape:text-[clamp(20px,4.5vh,26px)] font-black leading-none",
+    suitHuge: "text-[clamp(38px,5.5vh,48px)] landscape:text-[clamp(28px,6vh,38px)]",
     jokerText: "text-[11px]",
     padding: "p-1",
   },
   lg: {
     card: "w-[clamp(70px,10.2vh,90px)] h-[clamp(102px,14.6vh,130px)] landscape:w-[clamp(60px,15vh,80px)] landscape:h-[clamp(86px,21.5vh,116px)]",
-    rank: "text-[clamp(24px,3.5vh,30px)] landscape:text-[clamp(20px,4.8vh,24px)] font-black",
-    suitSmall: "text-[clamp(17px,2.6vh,20px)] landscape:text-[clamp(13px,3vh,16px)] font-black",
+    rank: "text-[clamp(30px,4.2vh,38px)] landscape:text-[clamp(24px,5.2vh,30px)] font-black leading-none",
+    suitSmall: "text-[clamp(30px,4.2vh,38px)] landscape:text-[clamp(24px,5.2vh,30px)] font-black leading-none",
+    suitHuge: "text-[clamp(46px,6.5vh,58px)] landscape:text-[clamp(34px,7.2vh,44px)]",
     jokerText: "text-[13px]",
     padding: "p-1.5",
   },
@@ -78,11 +81,11 @@ export const JesterIllustration = () => (
     {/* Left point */}
     <path d="M 32 32 Q 10 12 4 25 Q 7 35 32 35" fill="url(#jesterRed)" stroke="#F5A623" strokeWidth="0.4" filter="url(#jesterShadow)" />
     <circle cx="4" cy="25" r="2.2" fill="url(#jesterGold)" stroke="#CC9900" strokeWidth="0.3" />
-    
+
     {/* Right point */}
     <path d="M 32 32 Q 55 12 61 25 Q 58 35 32 35" fill="url(#jesterBlue)" stroke="#F5A623" strokeWidth="0.4" filter="url(#jesterShadow)" />
     <circle cx="61" cy="25" r="2.2" fill="url(#jesterGold)" stroke="#CC9900" strokeWidth="0.3" />
-    
+
     {/* Center point */}
     <path d="M 32 32 Q 32 0 32 6 Q 32 35 32 35" fill="url(#jesterGreen)" stroke="#F5A623" strokeWidth="0.4" filter="url(#jesterShadow)" />
     <circle cx="32" cy="6" r="2.2" fill="url(#jesterGold)" stroke="#CC9900" strokeWidth="0.3" />
@@ -93,17 +96,17 @@ export const JesterIllustration = () => (
 
     {/* Face */}
     <path d="M 16 35 C 16 20, 49 20, 49 35 C 49 50, 16 50, 16 35 Z" fill="url(#jesterFace)" stroke="#8A4C32" strokeWidth="0.8" />
-    
+
     {/* Cheeks red blush */}
     <circle cx="23" cy="43" r="2.5" fill="#EF4444" opacity="0.35" />
     <circle cx="42" cy="43" r="2.5" fill="#EF4444" opacity="0.35" />
-    
+
     {/* Eyes, Eyebrows */}
     <path d="M 21 34 Q 24 32 27 34" fill="none" stroke="#5C3A21" strokeWidth="1" strokeLinecap="round" />
     <path d="M 38 34 Q 41 32 44 34" fill="none" stroke="#5C3A21" strokeWidth="1" strokeLinecap="round" />
     <circle cx="24" cy="38" r="1.5" fill="#1A1A1A" />
     <circle cx="41" cy="38" r="1.5" fill="#1A1A1A" />
-    
+
     {/* Nose and Smile */}
     <path d="M 32 37 L 32 42 Q 30 42 30 43" fill="none" stroke="#8A4C32" strokeWidth="0.8" />
     <path d="M 23 45 Q 32 52 42 45" fill="none" stroke="#1A1A1A" strokeWidth="1.6" strokeLinecap="round" />
@@ -172,6 +175,7 @@ export default function PlayingCard({
   style,
 }: PlayingCardProps) {
   const s = sizeClasses[size];
+  const positionClass = /absolute|relative|fixed/.test(className) ? "" : "relative";
 
   if (faceDown) {
     return (
@@ -204,7 +208,7 @@ export default function PlayingCard({
   return (
     <div
       onClick={onClick}
-      className={`${s.card} rounded-md bg-white border border-gray-200 text-black select-none flex flex-col justify-between ${s.padding} shadow-md ${jokerBorderClass} ${selectedClass} ${onClick ? "cursor-pointer" : ""} ${className}`}
+      className={`${s.card} rounded-md bg-white border border-gray-200 text-black select-none flex flex-col justify-between ${s.padding} shadow-md ${positionClass} overflow-hidden ${jokerBorderClass} ${selectedClass} ${onClick ? "cursor-pointer" : ""} ${className}`}
       style={{
         transform: rotation ? `rotate(${rotation}deg)` : undefined,
         boxShadow: glowColor ? `0 0 12px 4px ${glowColor}` : undefined,
@@ -227,7 +231,7 @@ export default function PlayingCard({
       ) : (
         <>
           {/* Top-left corner (vertical stack) */}
-          <div className="flex flex-col items-center leading-none select-none self-start z-10 relative">
+          <div className="flex flex-col items-start leading-none select-none self-start z-10 relative">
             <span className={`${s.rank} font-black leading-none ${suitColor} tracking-tighter`}>
               {rank}
             </span>
@@ -236,19 +240,9 @@ export default function PlayingCard({
             </span>
           </div>
 
-          {/* Center symbol */}
-          <div className={`${s.suitSmall} text-center font-bold self-center leading-none select-none opacity-20 scale-150 ${suitColor}`}>
+          {/* Huge bottom-right suit symbol */}
+          <div className={`absolute right-1 bottom-1 sm:right-2 sm:bottom-2 font-bold leading-none select-none ${suitColor} ${s.suitHuge}`}>
             {symbol}
-          </div>
-
-          {/* Bottom corner (vertical stack, rotated) */}
-          <div className="flex flex-col items-center leading-none scale-y-[-1] scale-x-[-1] self-end z-10 relative">
-            <span className={`${s.rank} font-black leading-none ${suitColor} tracking-tighter`}>
-              {rank}
-            </span>
-            <span className={`${s.suitSmall} font-bold leading-none ${suitColor} mt-0.5`}>
-              {symbol}
-            </span>
           </div>
         </>
       )}

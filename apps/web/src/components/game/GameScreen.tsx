@@ -198,7 +198,7 @@ export default function GameScreen({
       {/* Chat FAB */}
       <button
         onClick={onOpenChat}
-        className="fixed bottom-[calc(env(safe-area-inset-bottom)+2rem)] right-4 z-50 w-12 h-12 rounded-full bg-[var(--color-gold)] text-black flex items-center justify-center shadow-lg shadow-[var(--color-gold)]/30 hover:brightness-110 transition-all"
+        className="fixed bottom-[calc(env(safe-area-inset-bottom)+2rem)] left-4 sm:left-auto sm:right-6 z-50 w-12 h-12 rounded-full bg-[var(--color-gold)] text-black flex items-center justify-center shadow-lg shadow-[var(--color-gold)]/30 hover:brightness-110 transition-all"
         title="Open Chat"
       >
         <svg

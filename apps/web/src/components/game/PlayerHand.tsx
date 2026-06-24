@@ -83,8 +83,8 @@ export default function PlayerHand({
 
       const discardRect = discardDropRef.current.getBoundingClientRect();
       const dragPoint = {
-        x: info.point.x - window.scrollX,
-        y: info.point.y - window.scrollY,
+        x: info.point.x,
+        y: info.point.y,
       };
 
       const isOverDiscard =
@@ -106,8 +106,8 @@ export default function PlayerHand({
 
       const discardRect = discardDropRef.current.getBoundingClientRect();
       const dragPoint = {
-        x: info.point.x - window.scrollX,
-        y: info.point.y - window.scrollY,
+        x: info.point.x,
+        y: info.point.y,
       };
 
       const isOverDiscard =
@@ -126,11 +126,10 @@ export default function PlayerHand({
 
   return (
     <div
-      className={`w-full bg-[#0D1B2A]/95 border-t py-2 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] flex flex-col z-30 transition-colors duration-300 ${
-        isMyTurn
+      className={`w-full bg-[#0D1B2A]/95 border-t py-2 px-3 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] flex flex-col z-30 transition-colors duration-300 ${isMyTurn
           ? "border-[var(--color-gold)]/50 shadow-[0_-6px_16px_rgba(245,166,35,0.12)]"
           : "border-white/10"
-      } overflow-visible shrink-0 select-none`}
+        } overflow-visible shrink-0 select-none`}
     >
       <div className="w-full flex items-center justify-between gap-3 max-w-5xl mx-auto relative overflow-visible">
         {/* Left: Player Profile Pill */}
@@ -211,14 +210,13 @@ export default function PlayerHand({
                       delay: roundStatus === "dealing" ? globalCardIndex * 0.04 : 0,
                     },
                   }}
-                  className={`w-[66px] h-[98px] sm:w-[74px] sm:h-[110px] rounded-md bg-white border text-black cursor-pointer shrink-0 relative hand-card ${
-                    isSelected
+                  className={`w-[clamp(66px,16vw,80px)] h-[clamp(98px,23.8vw,120px)] rounded-md bg-white border text-black cursor-pointer shrink-0 relative overflow-hidden hand-card ${isSelected
                       ? "ring-2 ring-[var(--color-gold)] border-[var(--color-gold)]"
                       : "border-gray-200"
-                  }`}
+                    }`}
                 >
                   <motion.div
-                    className="w-full h-full flex flex-col justify-between p-1 relative"
+                    className="w-full h-full flex flex-col justify-between p-[clamp(4px,1vw,5px)] relative"
                     onTap={() => onCardClick(card.id)}
                     drag={canDiscard ? "y" : false}
                     dragConstraints={{ top: -200, bottom: 0 }}
@@ -228,7 +226,7 @@ export default function PlayerHand({
                     onDragEnd={
                       canDiscard
                         ? (event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) =>
-                            handleDiscardDragEnd(card, event, info)
+                          handleDiscardDragEnd(card, event, info)
                         : undefined
                     }
                   >
@@ -254,26 +252,18 @@ export default function PlayerHand({
                     ) : (
                       <>
                         {/* Standard stacked corner */}
-                        <div className="flex flex-col items-center leading-none self-start">
-                          <span className={`text-[17px] font-black leading-none ${suitColor} tracking-tighter`}>
+                        <div className="flex flex-col items-start leading-none self-start">
+                          <span className={`text-[clamp(26px,7vw,30px)] font-black leading-none ${suitColor} tracking-tighter`}>
                             {rank}
                           </span>
-                          <span className={`text-[12px] font-bold leading-none ${suitColor} mt-0.5`}>
+                          <span className={`text-[clamp(26px,7vw,30px)] font-bold leading-none ${suitColor} mt-0.5`}>
                             {symbol}
                           </span>
                         </div>
 
-                        <div className={`text-[13px] text-center font-bold self-center leading-none opacity-20 scale-125 ${suitColor}`}>
+                        {/* Huge bottom-right suit symbol */}
+                        <div className={`absolute right-[clamp(2px,0.5vw,6px)] bottom-[clamp(2px,0.5vw,6px)] font-bold leading-none select-none ${suitColor} text-[clamp(36px,9.5vw,42px)]`}>
                           {symbol}
-                        </div>
-
-                        <div className="flex flex-col items-center leading-none scale-y-[-1] scale-x-[-1] self-end">
-                          <span className={`text-[17px] font-black leading-none ${suitColor} tracking-tighter`}>
-                            {rank}
-                          </span>
-                          <span className={`text-[12px] font-bold leading-none ${suitColor} mt-0.5`}>
-                            {symbol}
-                          </span>
                         </div>
                       </>
                     )}
