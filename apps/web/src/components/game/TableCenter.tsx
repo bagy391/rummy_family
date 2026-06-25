@@ -45,6 +45,11 @@ interface TableCenterProps {
   // Spectator props
   isSpectator?: boolean;
   spectatorContent?: React.ReactNode;
+
+  // Extensibility props for end-of-round review
+  rowSizes?: { id: string; size: number }[];
+  onRowSizesChange?: (sizes: { id: string; size: number }[]) => void;
+  boardOnly?: boolean;
 }
 
 
@@ -80,6 +85,9 @@ export default function TableCenter({
   onReorder,
   isSpectator = false,
   spectatorContent,
+  rowSizes: propRowSizes,
+  onRowSizesChange,
+  boardOnly = false,
 }: TableCenterProps) {
   const canDraw = isMyTurn && !hasDrawnThisTurn;
   const canDiscard = isMyTurn && hasDrawnThisTurn;
@@ -93,7 +101,9 @@ export default function TableCenter({
   const containerRef = useRef<HTMLDivElement>(null);
   const slotCenters = useRef<{ x: number; y: number; idx: number; rowIdx: number }[]>([]);
   const lastHandRef = useRef<Card[]>([]);
-  const [rowSizes, setRowSizes] = useState<{ id: string; size: number }[]>([]);
+  const [localRowSizes, setLocalRowSizes] = useState<{ id: string; size: number }[]>([]);
+  const rowSizes = propRowSizes !== undefined ? propRowSizes : localRowSizes;
+  const setRowSizes = onRowSizesChange !== undefined ? onRowSizesChange : setLocalRowSizes;
   const isLocalReorderRef = useRef(false);
 
   useEffect(() => {
@@ -404,6 +414,137 @@ export default function TableCenter({
         cards: myHand.slice(i, i + 4)
       });
     }
+  }
+
+  if (boardOnly) {
+    return (
+      <div className="w-full flex flex-col justify-center items-center overflow-visible py-4">
+        <div ref={containerRef} className="w-full rounded-2xl bg-[#2D5265]/40 border-2 border-[#C67035]/80 relative flex flex-col p-2 sm:p-4 shadow-inner backdrop-blur-sm justify-center items-center min-h-[300px] overflow-visible">
+          {isSpectator ? (
+            <div className="w-full flex justify-center z-30 animate-fade-in">
+              {spectatorContent}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-y-[clamp(8px,2vh,14px)] w-full items-center overflow-visible">
+              {cardRows.map((row, rowIdx) => (
+                <div
+                  key={row.id}
+                  className="flex items-center justify-center w-full max-w-[clamp(340px,80vw,420px)] overflow-visible"
+                >
+                  {row.cards.map((card, cardIdxInRow) => {
+                    const cardIdx = myHand.findIndex((c) => c.id === card.id);
+                    if (cardIdx === -1) return null;
+
+                    const isSelected = selectedCards.includes(card.id);
+                    const suitColor = cardSuitColor(card.suit);
+                    const symbol = cardSuitSymbol(card.suit);
+                    const rank = cardRankName(card.rank);
+                    const isCardJoker = card.suit === Suit.JOKER;
+
+                    return (
+                      <motion.div
+                        key={card.id}
+                        layoutId={card.id}
+                        drag={!isSpectator}
+                        dragConstraints={containerRef}
+                        dragElastic={0.15}
+                        dragMomentum={false}
+                        dragSnapToOrigin
+                        onDragStart={() => handleDragStartInternal(cardIdx)}
+                        onDrag={(e, info) => handleDragInternal(e, info)}
+                        onDragEnd={handleDragEndInternal}
+                        data-card-idx={cardIdx}
+                        data-row-idx={rowIdx}
+                        animate={{
+                          x: 0,
+                          y: isSelected ? -10 : 0,
+                          scale: activeDragIdx === cardIdx ? 1.05 : 1,
+                        }}
+                        style={{
+                          zIndex: activeDragIdx === cardIdx ? 100 : isSelected ? 50 : 10 + cardIdx,
+                          opacity: activeDragIdx === cardIdx ? 0.85 : 1,
+                          touchAction: "none",
+                        }}
+                        whileHover={{
+                          y: isSelected ? -14 : -6,
+                          scale: activeDragIdx === cardIdx ? 1.05 : 1.02,
+                          zIndex: 60,
+                        }}
+                        transition={{
+                          type: "spring",
+                          stiffness: 300,
+                          damping: 30,
+                        }}
+                        className={`w-[clamp(66px,18vw,88px)] h-[clamp(99px,27vw,132px)] rounded-lg bg-white border-2 text-black cursor-pointer shrink-0 relative select-none ${cardIdxInRow > 0 ? "-ml-[clamp(33px,9vw,44px)]" : ""
+                          } ${isSelected
+                            ? "ring-2 ring-[var(--color-gold)] border-[var(--color-gold)] shadow-[0_0_12px_4px_rgba(245,166,35,0.45)]"
+                            : hoveredSlotIdx === cardIdx && activeDragIdx !== cardIdx
+                              ? "ring-2 ring-emerald-400 border-emerald-400 shadow-[0_0_12px_4px_rgba(16,185,129,0.45)]"
+                              : "border-gray-300 shadow-md"
+                          }`}
+                        onClick={() => handleCardClickInternal(card.id, cardIdx)}
+                      >
+                        <div className="w-full h-full flex flex-col justify-between p-[clamp(4px,1.2vw,6px)] relative overflow-hidden rounded-lg">
+                          {isCardJoker ? (
+                            <div className="w-full h-full border border-amber-500/30 rounded-md p-1 flex flex-col justify-start select-none relative bg-amber-500/5">
+                              <div className="flex flex-col items-center leading-none text-[8px] sm:text-[10px] font-black text-amber-600 uppercase tracking-tighter self-start z-10 relative">
+                                <span>J</span>
+                                <span>O</span>
+                                <span>K</span>
+                                <span>E</span>
+                                <span>R</span>
+                              </div>
+                              <JesterIllustration />
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex flex-col items-start leading-none self-start select-none z-10 relative">
+                                <span className={`text-[clamp(28px,7.5vw,36px)] font-black leading-none ${suitColor} tracking-tighter`}>
+                                  {rank}
+                                </span>
+                                <span className={`text-[clamp(28px,7.5vw,36px)] font-bold leading-none ${suitColor} mt-0.5`}>
+                                  {symbol}
+                                </span>
+                              </div>
+                              <div className={`absolute right-[clamp(2px,0.5vw,8px)] bottom-[clamp(2px,0.5vw,8px)] font-bold leading-none select-none ${suitColor} text-[clamp(42px,11vw,56px)]`}>
+                                {symbol}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              ))}
+              {!isSpectator && rowSizes.length < 5 && (
+                <div
+                  data-card-idx={myHand.length}
+                  data-row-idx={rowSizes.length}
+                  className={`w-[200px] h-[32px] sm:h-[36px] border-2 border-dashed rounded-xl flex items-center justify-center text-[11px] font-black uppercase tracking-wider transition-colors mt-2 ${hoveredSlotIdx === myHand.length
+                    ? "border-emerald-400 text-emerald-400 bg-emerald-500/5 shadow-[0_0_12px_4px_rgba(16,185,129,0.25)] animate-pulse"
+                    : "border-white/15 text-white/30 hover:border-white/30 hover:text-white/50"
+                    }`}
+                >
+                  + New Group
+                </div>
+              )}
+            </div>
+          )}
+          {!isSpectator && onResortHand && (
+            <motion.button
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              onClick={onResortHand}
+              className="absolute bottom-3 right-3 w-8 h-8 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md border border-red-500 hover:bg-red-500 transition-colors z-20"
+              title="Sort Hand"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </motion.button>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (

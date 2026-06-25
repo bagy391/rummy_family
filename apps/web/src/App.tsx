@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/auth-store";
 import { supabase } from "@/lib/supabase";
@@ -15,13 +15,20 @@ import { decodeCleanUTF8 } from "@/lib/utils";
  */
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const isLoading = useAuthStore((s) => s.isLoading);
+  const [isLoading, setIsLoading] = useState(true);
   const setUser = useAuthStore((s) => s.setUser);
   const setSession = useAuthStore((s) => s.setSession);
-  const setLoading = useAuthStore((s) => s.setLoading);
 
   useEffect(() => {
     let active = true;
+
+    // Guard: set a safety timeout to disable loading state if auth check hangs (e.g. cold start, SW cache issues)
+    const safetyTimeout = setTimeout(() => {
+      if (active) {
+        console.warn("Auth initialization timed out, forcing loading to false");
+        setIsLoading(false);
+      }
+    }, 3500);
 
     // 1. Check current session on mount (once)
     const initAuth = async () => {
@@ -61,8 +68,9 @@ export default function App() {
       } catch (err) {
         console.error("Initial auth check failed:", err);
       } finally {
+        clearTimeout(safetyTimeout);
         if (active) {
-          setLoading(false);
+          setIsLoading(false);
         }
       }
     };
@@ -112,9 +120,10 @@ export default function App() {
 
     return () => {
       active = false;
+      clearTimeout(safetyTimeout);
       subscription.unsubscribe();
     };
-  }, [setUser, setSession, setLoading]);
+  }, [setUser, setSession]);
 
   if (isLoading) {
     return (

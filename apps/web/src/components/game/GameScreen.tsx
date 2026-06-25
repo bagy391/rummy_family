@@ -83,6 +83,10 @@ interface GameScreenProps {
 
   // Spectator content
   spectatorContent?: React.ReactNode;
+
+  // Custom row grouping props
+  rowSizes?: { id: string; size: number }[];
+  onRowSizesChange?: (sizes: { id: string; size: number }[]) => void;
 }
 
 export default function GameScreen({
@@ -122,6 +126,8 @@ export default function GameScreen({
   onOpenChat,
   unreadCount,
   spectatorContent,
+  rowSizes,
+  onRowSizesChange,
 }: GameScreenProps) {
 
 
@@ -193,6 +199,8 @@ export default function GameScreen({
         onReorder={onReorderHand}
         isSpectator={isSpectator}
         spectatorContent={spectatorContent}
+        rowSizes={rowSizes}
+        onRowSizesChange={onRowSizesChange}
       />
 
       {/* Chat FAB */}

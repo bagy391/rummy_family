@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
+import { sortHand } from "@rummy/shared";
 import type { Card, WildJokerInfo } from "@rummy/shared";
-import { cardSuitColor, cardSuitSymbol, cardRankName } from "./card-utils";
+import TableCenter from "./TableCenter";
 import { Info, Trophy } from "lucide-react";
 
 interface RoomPlayer {
@@ -15,6 +16,7 @@ interface RoomPlayer {
   opted_leave_share: boolean;
   disconnected_at?: string | null;
   upi_id?: string;
+  avatarUrl?: string | null;
 }
 
 interface RoundPlayer {
@@ -50,6 +52,12 @@ interface PostRoundModalProps {
   ScoreTrendChart: React.ComponentType<{ scoreHistory: any[]; players: any[] }>;
   isChartVisible: boolean;
   onToggleChart: () => void;
+
+  // Custom hand grouping props
+  myHand: Card[];
+  onReorderHand: (newHand: Card[]) => void;
+  rowSizes: { id: string; size: number }[];
+  onRowSizesChange: (sizes: { id: string; size: number }[]) => void;
 }
 
 export default function PostRoundModal({
@@ -71,6 +79,10 @@ export default function PostRoundModal({
   ScoreTrendChart,
   isChartVisible,
   onToggleChart,
+  myHand,
+  onReorderHand,
+  rowSizes,
+  onRowSizesChange,
 }: PostRoundModalProps) {
   const [activeTab, setActiveTab] = useState<"scoreboard" | "cards">("scoreboard");
 
@@ -80,6 +92,19 @@ export default function PostRoundModal({
   const winnerPlayer = winner
     ? players.find((p) => p.player_id === winner.player_id)
     : null;
+
+  const isCalculating = roundPlayers.some((rp) => rp.score_this_round === null);
+
+  const [selectedCards, setSelectedCards] = useState<string[]>([]);
+  const handleCardClick = (cardId: string) => {
+    setSelectedCards((prev) =>
+      prev.includes(cardId) ? prev.filter((id) => id !== cardId) : [...prev, cardId]
+    );
+  };
+  const handleResortHand = () => {
+    const sorted = sortHand(myHand);
+    onReorderHand(sorted);
+  };
 
 
 
@@ -194,9 +219,15 @@ export default function PostRoundModal({
                   </div>
 
                   <div className="text-right flex items-center gap-6">
-                    <span className="text-[24px] font-bold font-[var(--font-score)] text-[var(--color-gold)]">
-                      +{rp?.score_this_round ?? 0}
-                    </span>
+                    {rp && rp.score_this_round !== null ? (
+                      <span className="text-[24px] font-bold font-[var(--font-score)] text-[var(--color-gold)]">
+                        +{rp.score_this_round}
+                      </span>
+                    ) : (
+                      <span className="text-sm font-semibold text-white/50 animate-pulse">
+                        Counting...
+                      </span>
+                    )}
                     <div className="text-center">
                       <span className="text-[24px] font-bold font-[var(--font-score)] text-white">
                         {p.total_score}
@@ -290,69 +321,44 @@ export default function PostRoundModal({
         )}
 
         {activeTab === "cards" && (
-          <div className="space-y-6 max-w-xl mx-auto">
-            {roundPlayers.map((rp) => {
-              const player = players.find(
-                (p) => p.player_id === rp.player_id
-              );
-              if (!player) return null;
-              const isWinner =
-                rp.status === "winner" || rp.status === "shown_valid";
-
-              return (
-                <div
-                  key={rp.id}
-                  className={`p-4 rounded-xl border ${
-                    isWinner
-                      ? "bg-[var(--color-gold)]/5 border-[var(--color-gold)]/20"
-                      : "bg-white/5 border-white/10"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    {isWinner && <span className="text-lg">🏆</span>}
-                    <span className="text-[18px] font-bold text-white">
-                      {player.name}
-                    </span>
-                    <span className="text-[12px] text-white/40 capitalize">
-                      {rp.status.replace("_", " ")}
-                    </span>
-                    <span className="text-[14px] font-bold font-[var(--font-score)] text-[var(--color-gold)] ml-auto">
-                      {rp.score_this_round ?? 0} pts
-                    </span>
-                  </div>
-
-                  {/* All cards flat */}
-                  {rp.hand && rp.hand.length > 0 ? (
-                    <div className="flex gap-1 overflow-x-auto p-2 rounded-lg bg-white/5 border border-white/10">
-                      {rp.hand.map((card) => {
-                        const sColor = cardSuitColor(card.suit);
-                        return (
-                          <div
-                            key={card.id}
-                            className="w-[36px] h-[50px] rounded bg-white border border-gray-200 text-black flex flex-col justify-between p-0.5 shrink-0 select-none shadow-sm"
-                          >
-                            <span
-                              className={`text-[12px] font-black leading-none ${sColor}`}
-                            >
-                              {cardRankName(card.rank)}
-                            </span>
-                            <span
-                              className={`text-[14px] text-center font-bold leading-none ${sColor}`}
-                            >
-                              {cardSuitSymbol(card.suit)}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="text-[14px] text-white/30 italic">
-                      Hand not available (player dropped)
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+          <div className="space-y-4 max-w-xl mx-auto w-full">
+            <h3 className="text-[18px] font-bold text-center text-white/80 uppercase tracking-wider mb-2 font-[Outfit]">
+              Your Hand Grouped
+            </h3>
+            <TableCenter
+              discardPile={[]}
+              isMyTurn={false}
+              hasDrawnThisTurn={false}
+              currentTurnPlayerName=""
+              onDrawCard={() => {}}
+              onPickDiscard={() => {}}
+              selectedCards={selectedCards}
+              onCardClick={handleCardClick}
+              wildJoker={round.wild_joker}
+              onResortHand={handleResortHand}
+              myName={me?.name || "You"}
+              myAvatarUrl={me?.avatarUrl}
+              myTotalScore={me?.total_score || 0}
+              roundNumber={round.round_number}
+              betAmount={0}
+              soundOn={false}
+              vibrationOn={false}
+              onToggleSound={() => {}}
+              onToggleVibration={() => {}}
+              onQuit={() => {}}
+              myHand={myHand}
+              showFirstDrop={false}
+              showSecondDrop={false}
+              onDropFirst={() => {}}
+              onDropSecond={() => {}}
+              onDeclareShow={() => {}}
+              onDiscard={() => {}}
+              onReorder={onReorderHand}
+              rowSizes={rowSizes}
+              onRowSizesChange={onRowSizesChange}
+              boardOnly={true}
+              isSpectator={false}
+            />
           </div>
         )}
 
@@ -363,13 +369,18 @@ export default function PostRoundModal({
         {isAdmin ? (
           <button
             onClick={onStartNextRound}
-            className="w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-[18px] shadow-lg min-h-[52px] transition-all"
+            disabled={isCalculating}
+            className={`w-full py-3.5 rounded-xl font-bold text-[18px] shadow-lg min-h-[52px] transition-all ${
+              isCalculating
+                ? "bg-emerald-600/50 text-white/50 cursor-not-allowed"
+                : "bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white"
+            }`}
           >
-            Start Round {round.round_number + 1}
+            {isCalculating ? "Calculating Scores..." : `Start Round ${round.round_number + 1}`}
           </button>
         ) : (
           <div className="text-center text-[14px] text-white/40 italic animate-pulse py-3">
-            Waiting for host to start the next round...
+            {isCalculating ? "Calculating scores..." : "Waiting for host to start the next round..."}
           </div>
         )}
 

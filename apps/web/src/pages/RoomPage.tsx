@@ -161,6 +161,7 @@ export default function RoomPage() {
 
   // Client game state
   const [myHand, setMyHand] = useState<Card[]>([]);
+  const [rowSizes, setRowSizes] = useState<{ id: string; size: number }[]>([]);
   const [selectedCards, setSelectedCards] = useState<string[]>([]); // card IDs
   const [copied, setCopied] = useState(false);
   const [nowTime, setNowTime] = useState(new Date().getTime());
@@ -282,7 +283,7 @@ export default function RoomPage() {
   const isSpectator: boolean =
     me?.status === "spectating" ||
     me?.status === "eliminated" ||
-    (room?.status === "active" && round && round.status === "active" && !myRoundState) ||
+    (room?.status === "active" && round && round.status === "active" && me?.status !== "active" && !myRoundState) ||
     (round?.status === "active" && isDropped) ||  // only during active round
     false;
 
@@ -1794,14 +1795,14 @@ export default function RoomPage() {
       // Check if game is completed (only 1 active player left)
       const remainingActivePlayers = updatedRoomPlayers.filter(p => p.status === "active" || p.status === "disconnected");
       if (remainingActivePlayers.length <= 1) {
+        // Generate payments records for bet amounts first
+        await generateBetPayments(winnerId);
+
         // Complete game
         await supabase
           .from("rooms")
           .update({ status: "finished" })
           .eq("id", room.id);
-
-        // Generate payments records for bet amounts
-        await generateBetPayments(winnerId);
 
         // Update stats
         const finalScoresMap: Record<string, number> = {};
@@ -2217,12 +2218,6 @@ export default function RoomPage() {
       );
 
       if (remainingActiveRoomPlayers.length <= 1) {
-        // Complete the game
-        await supabase
-          .from("rooms")
-          .update({ status: "finished" })
-          .eq("id", room.id);
-
         const winner = remainingActiveRoomPlayers[0];
         if (winner) {
           const winnerId = winner.player_id;
@@ -2234,6 +2229,12 @@ export default function RoomPage() {
           }
           await updateGameFinishedStats([winnerId], finalScoresMap);
         }
+
+        // Complete the game
+        await supabase
+          .from("rooms")
+          .update({ status: "finished" })
+          .eq("id", room.id);
       }
 
       toast.success("You quit the game");
@@ -2448,18 +2449,12 @@ export default function RoomPage() {
 
     setLoadingAction(true);
     try {
-      // 1. Set the room status to finished
-      await supabase
-        .from("rooms")
-        .update({ status: "finished" })
-        .eq("id", room.id);
-
-      // 2. Identify remaining active players as joint winners
+      // 1. Identify remaining active players as joint winners
       const jointWinnerIds = players
         .filter(p => p.status === "active" || p.status === "disconnected")
         .map(p => p.player_id);
 
-      // 3. Insert ROUND_ENDED game event
+      // 2. Insert ROUND_ENDED game event
       await supabase.from("game_events").insert({
         round_id: round.id,
         room_id: room.id,
@@ -2469,15 +2464,21 @@ export default function RoomPage() {
         event_data: { reason: "Mutual Quit", winners: jointWinnerIds },
       });
 
-      // 4. Generate split payments from eliminated players
+      // 3. Generate split payments from eliminated players
       await generateSplitBetPayments(jointWinnerIds);
 
-      // 5. Update stats
+      // 4. Update stats
       const finalScoresMap: Record<string, number> = {};
       for (const p of players) {
         finalScoresMap[p.player_id] = p.total_score;
       }
       await updateGameFinishedStats(jointWinnerIds, finalScoresMap);
+
+      // 5. Set the room status to finished
+      await supabase
+        .from("rooms")
+        .update({ status: "finished" })
+        .eq("id", room.id);
 
     } catch (err: any) {
       console.error("Failed to resolve mutual quit:", err);
@@ -2741,8 +2742,8 @@ export default function RoomPage() {
     });
   }, [roundPlayers, user?.id]);
 
-  // Render loading screen if room details are not loaded yet
-  if (!room) {
+  // Render loading screen if room details or players are not loaded yet
+  if (!room || players.length === 0) {
     const isOfflineOrError = !isBrowserOnline || channelStatus === "CLOSED" || channelStatus === "CHANNEL_ERROR" || channelStatus === "TIMED_OUT";
     return (
       <div className="min-h-dvh bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] flex flex-col items-center justify-center p-6 text-center select-none">
@@ -2964,6 +2965,8 @@ export default function RoomPage() {
             onDropSecond={() => handleDrop("SECOND")}
             onCardClick={handleCardClick}
             onReorderHand={setMyHand}
+            rowSizes={rowSizes}
+            onRowSizesChange={setRowSizes}
             onAdminKick={handleAdminKick}
             getTimeoutText={getTimeoutText}
             soundOn={soundOn}
@@ -3089,6 +3092,10 @@ export default function RoomPage() {
           ScoreTrendChart={ScoreTrendChart}
           isChartVisible={isChartVisible}
           onToggleChart={() => setIsChartVisible(!isChartVisible)}
+          myHand={myHand}
+          onReorderHand={setMyHand}
+          rowSizes={rowSizes}
+          onRowSizesChange={setRowSizes}
         />
       )}
 
