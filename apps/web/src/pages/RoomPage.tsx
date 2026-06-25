@@ -17,6 +17,7 @@ import {
 import type { Card, WildJokerInfo } from "@rummy/shared";
 import GameScreen from "@/components/game/GameScreen";
 import PostRoundModal from "@/components/game/PostRoundModal";
+import PlayingCard from "@/components/game/PlayingCard";
 import { decodeCleanUTF8 } from "@/lib/utils";
 
 
@@ -165,6 +166,7 @@ export default function RoomPage() {
   const [selectedCards, setSelectedCards] = useState<string[]>([]); // card IDs
   const [copied, setCopied] = useState(false);
   const [nowTime, setNowTime] = useState(new Date().getTime());
+  const [showCardToConfirm, setShowCardToConfirm] = useState<Card | null>(null);
 
   // Chat & Reaction state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1584,7 +1586,7 @@ export default function RoomPage() {
     }
   };
 
-  const handleDeclareShow = async (showCard: Card) => {
+  const executeDeclareShow = async (showCard: Card) => {
     if (!round || !isMyTurn || !myRoundState?.has_drawn_this_turn || !round.wild_joker) return;
     setLoadingAction(true);
 
@@ -1688,6 +1690,11 @@ export default function RoomPage() {
     } finally {
       setLoadingAction(false);
     }
+  };
+
+  const handleDeclareShow = (showCard: Card) => {
+    if (!round || !isMyTurn || !myRoundState?.has_drawn_this_turn || !round.wild_joker) return;
+    setShowCardToConfirm(showCard);
   };
 
   const declareRoundWinner = async (winnerId: string) => {
@@ -3252,6 +3259,57 @@ export default function RoomPage() {
           </motion.div>
         </div>
       )}
+
+      {/* SHOW DECLARE CONFIRMATION MODAL */}
+      <AnimatePresence>
+        {showCardToConfirm && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="w-full max-w-sm p-6 rounded-2xl bg-[#0D1B2A]/95 border border-emerald-500/30 shadow-[0_0_50px_rgba(16,185,129,0.15)] flex flex-col items-center text-center"
+            >
+              <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-4 animate-pulse">
+                <Trophy className="w-6 h-6" />
+              </div>
+
+              <h3 className="text-xl font-bold font-[Outfit] text-white mb-2">
+                Declare Show
+              </h3>
+
+              <p className="text-sm text-[var(--color-text-secondary)] mb-6 max-w-[280px]">
+                Are you sure you want to use this card to declare a show? Your remaining 13 cards will be validated.
+              </p>
+
+              {/* Card Preview */}
+              <div className="mb-6 flex justify-center scale-110">
+                <PlayingCard card={showCardToConfirm} size="lg" faceDown={false} />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => setShowCardToConfirm(null)}
+                  className="flex-1 py-3 rounded-xl text-sm font-semibold bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    const card = showCardToConfirm;
+                    setShowCardToConfirm(null);
+                    executeDeclareShow(card);
+                  }}
+                  className="flex-1 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white shadow-lg shadow-emerald-900/30 active:scale-95 transition-all"
+                >
+                  Yes, Declare
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* MUTUAL QUIT VOTING MODAL */}
       <AnimatePresence>
