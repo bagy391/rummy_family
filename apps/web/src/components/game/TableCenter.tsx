@@ -52,7 +52,52 @@ interface TableCenterProps {
   boardOnly?: boolean;
 }
 
+function healRowSizes(currentSizes: { id: string; size: number }[], handLength: number) {
+  const newSizes = currentSizes.map(g => ({ ...g }));
+  let total = newSizes.reduce((sum, g) => sum + g.size, 0);
 
+  if (total === handLength) return newSizes;
+
+  if (total < handLength) {
+    let diff = handLength - total;
+    // Distribute diff to existing groups or create new ones
+    for (let i = 0; i < newSizes.length && diff > 0; i++) {
+      const g = newSizes[i];
+      if (!g) continue;
+      const space = 5 - g.size;
+      if (space > 0) {
+        const toAdd = Math.min(space, diff);
+        g.size += toAdd;
+        diff -= toAdd;
+      }
+    }
+    // If still have diff, add new groups
+    while (diff > 0) {
+      const size = Math.min(5, diff);
+      newSizes.push({
+        id: `group-${Math.random().toString(36).substring(2, 11)}`,
+        size
+      });
+      diff -= size;
+    }
+  } else {
+    // total > handLength
+    let diff = total - handLength;
+    for (let i = newSizes.length - 1; i >= 0 && diff > 0; i--) {
+      const g = newSizes[i];
+      if (!g) continue;
+      if (g.size <= diff) {
+        diff -= g.size;
+        newSizes.splice(i, 1);
+      } else {
+        g.size -= diff;
+        diff = 0;
+      }
+    }
+  }
+
+  return newSizes;
+}
 
 export default function TableCenter({
   discardPile,
@@ -105,6 +150,17 @@ export default function TableCenter({
   const rowSizes = propRowSizes !== undefined ? propRowSizes : localRowSizes;
   const setRowSizes = onRowSizesChange !== undefined ? onRowSizesChange : setLocalRowSizes;
   const isLocalReorderRef = useRef(false);
+
+  // Self-healing check to ensure rowSizes sum matches myHand.length at all times (preventing missing cards)
+  useEffect(() => {
+    if (myHand.length === 0) return;
+    const total = rowSizes.reduce((sum, g) => sum + g.size, 0);
+    if (total !== myHand.length) {
+      console.warn(`[TableCenter] Hand sizes out of sync: rowSizes total ${total} vs myHand length ${myHand.length}. Healing...`);
+      const healed = healRowSizes(rowSizes, myHand.length);
+      setRowSizes(healed);
+    }
+  }, [myHand.length, rowSizes, setRowSizes]);
 
   useEffect(() => {
     const prevHand = lastHandRef.current;
