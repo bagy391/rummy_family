@@ -3187,7 +3187,7 @@ export default function RoomPage() {
                   const payeeUpi = payee?.upi_id || "";
                   const payeeName = payee?.name || "Player";
                   const upiUrl = payeeUpi
-                    ? `upi://pay?pa=${encodeURIComponent(payeeUpi)}&pn=${encodeURIComponent(payeeName)}&am=${room.bet_amount}&cu=INR&tn=Family%20Rummy%20-%20Room%20${room.room_code}`
+                    ? `upi://pay?pa=${encodeURIComponent(payeeUpi)}&pn=${encodeURIComponent(payeeName)}&am=${pay.amount}&cu=INR&tn=Family%20Rummy%20-%20Room%20${room.room_code}`
                     : "";
 
                   return (
