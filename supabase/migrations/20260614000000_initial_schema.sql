@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS public.payment_records (
     payer_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
     payee_id uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
     amount numeric NOT NULL,
-    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'completed')),
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'completed')),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     confirmed_at timestamp with time zone,
     UNIQUE(room_id, payer_id, payee_id)
@@ -295,9 +295,9 @@ CREATE POLICY "Room members can insert payment records" ON public.payment_record
         )
     );
 
-CREATE POLICY "Payees can update payment confirmations" ON public.payment_records
+CREATE POLICY "Payees and payers can update payment records" ON public.payment_records
     FOR UPDATE USING (
-        payee_id = auth.uid()
+        payee_id = auth.uid() OR payer_id = auth.uid()
     );
 
 -- 8. Game Stats & Leaderboard View

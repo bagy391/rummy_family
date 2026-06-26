@@ -188,6 +188,68 @@ export default function DashboardPage() {
     }
   };
 
+  const handleMarkAsPaid = async (paymentId: string) => {
+    try {
+      const { error } = await supabase
+        .from("payment_records")
+        .update({ status: "paid" })
+        .eq("id", paymentId);
+
+      if (error) throw error;
+      toast.success("Payment marked as paid! Awaiting payee confirmation.");
+      fetchDashboardData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to mark payment as paid");
+    }
+  };
+
+  const handleRejectPayment = async (paymentId: string) => {
+    try {
+      const { error } = await supabase
+        .from("payment_records")
+        .update({ status: "pending" })
+        .eq("id", paymentId);
+
+      if (error) throw error;
+      toast.info("Payment marked as not received. Payer will be notified.");
+      fetchDashboardData();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update payment status");
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => toast.success("UPI ID copied!"))
+        .catch(() => fallbackCopyText(text));
+    } else {
+      fallbackCopyText(text);
+    }
+  };
+
+  const fallbackCopyText = (text: string) => {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand("copy");
+      document.body.removeChild(textArea);
+      if (successful) {
+        toast.success("UPI ID copied!");
+      } else {
+        toast.error("Failed to copy UPI ID");
+      }
+    } catch (err) {
+      toast.error("Failed to copy UPI ID");
+    }
+  };
+
   const updateStatsEarnings = async (playerId: string, amt: number) => {
     const { data: stats } = await supabase
       .from("game_stats")
@@ -446,7 +508,7 @@ export default function DashboardPage() {
               Create a new table, set your bet, or enter a room code to join an active table.
             </p>
             <div className="text-xs text-[var(--color-text-muted)] font-mono">
-              UPI ID: {user?.upiId}
+              UPI ID: {user?.upiId || "Not set"}
             </div>
           </div>
 
@@ -597,17 +659,14 @@ export default function DashboardPage() {
               <h3 className="font-bold font-[Outfit] text-lg">Unsettled Bet Payments</h3>
             </div>
 
-            {pendingPayments.filter(p => p.status === "pending").length === 0 ? (
+            {pendingPayments.filter(p => p.status !== "completed").length === 0 ? (
               <div className="text-center py-6 text-sm text-[var(--color-text-muted)] bg-[var(--color-bg-secondary)]/30 rounded-xl border border-dashed border-[var(--color-border-default)]">
                 All bets settled! 🎉 No pending payments.
               </div>
             ) : (
               <div className="space-y-3">
-                {pendingPayments.filter(p => p.status === "pending").map((pay) => {
+                {pendingPayments.filter(p => p.status !== "completed").map((pay) => {
                   const isPayerMe = pay.payerId === user?.id;
-                  const upiUrl = isPayerMe && pay.payeeUpi
-                    ? `upi://pay?pa=${encodeURIComponent(pay.payeeUpi)}&pn=${encodeURIComponent(pay.payeeName)}&am=${pay.amount}&cu=INR&tn=Family%20Rummy%20-%20Room%20${pay.roomCode}`
-                    : "";
 
                   return (
                     <div 
@@ -624,29 +683,70 @@ export default function DashboardPage() {
                           ) : (
                             <span><strong>{pay.payerName}</strong> owes you <strong className="text-emerald-400">₹{pay.amount}</strong></span>
                           )}
+                          <span className="ml-2 font-mono text-[10px]">
+                            ({pay.status === "paid" ? "Awaiting confirmation" : "Pending"})
+                          </span>
                         </div>
+                        {pay.status !== "completed" && (
+                          <div className="text-[var(--color-text-muted)] mt-1 font-mono text-[10.5px]">
+                            {pay.payeeUpi ? (
+                              <>
+                                Payee UPI:{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(pay.payeeUpi)}
+                                  className="font-bold text-emerald-400 hover:text-emerald-300 underline cursor-pointer focus:outline-none"
+                                  title="Click to copy"
+                                >
+                                  {pay.payeeUpi}
+                                </button>
+                              </>
+                            ) : (
+                              <span className="italic text-[var(--color-text-muted)]">Payee UPI not provided</span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex gap-2">
                         {isPayerMe ? (
-                          upiUrl ? (
-                            <a 
-                              href={upiUrl}
-                              onClick={() => toast.info("Opening UPI application...")}
-                              className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md flex items-center gap-1.5 transition-colors"
-                            >
-                              Pay UPI
-                            </a>
-                          ) : (
-                            <span className="text-[10px] text-[var(--color-text-muted)] italic">Awaiting winner's UPI</span>
-                          )
+                          <>
+                            {pay.status === "pending" ? (
+                              <button
+                                onClick={() => handleMarkAsPaid(pay.id)}
+                                className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                              >
+                                Mark as Paid
+                              </button>
+                            ) : (
+                              <span className="px-2 py-1 rounded text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold">
+                                Awaiting Confirm
+                              </span>
+                            )}
+                          </>
                         ) : (
-                          <button 
-                            onClick={() => handleConfirmPayment(pay.id, pay.payeeId, pay.payerId, pay.amount)}
-                            className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black shadow-md transition-colors"
-                          >
-                            Confirm Recv
-                          </button>
+                          <>
+                            {pay.status === "paid" ? (
+                              <div className="flex gap-1.5">
+                                <button 
+                                  onClick={() => handleConfirmPayment(pay.id, pay.payeeId, pay.payerId, pay.amount)}
+                                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                                >
+                                  Confirm Recv
+                                </button>
+                                <button 
+                                  onClick={() => handleRejectPayment(pay.id)}
+                                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white shadow-md transition-colors"
+                                >
+                                  Not Received
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-[var(--color-text-muted)] italic">
+                                Awaiting payment
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -761,7 +861,18 @@ export default function DashboardPage() {
 
                                   const otherPartyName = isPayerMe ? p.payeeName : p.payerName;
                                   const direction = isPayerMe ? "to" : "from";
-                                  const statusColor = p.status === "completed" ? "text-emerald-500" : "text-amber-500";
+                                  const statusColor =
+                                    p.status === "completed"
+                                      ? "text-emerald-500"
+                                      : p.status === "paid"
+                                      ? "text-amber-400 font-bold"
+                                      : "text-slate-400";
+                                  const statusLabel =
+                                    p.status === "completed"
+                                      ? "Paid"
+                                      : p.status === "paid"
+                                      ? "Awaiting Confirm"
+                                      : "Pending";
 
                                   return (
                                     <div key={p.id} className="whitespace-normal leading-normal">
@@ -769,7 +880,7 @@ export default function DashboardPage() {
                                         ₹{p.amount} {direction} {otherPartyName}{" "}
                                       </span>
                                       <span className={`font-semibold ${statusColor}`}>
-                                        ({p.status === "completed" ? "Paid" : "Pending"})
+                                        ({statusLabel})
                                       </span>
                                     </div>
                                   );

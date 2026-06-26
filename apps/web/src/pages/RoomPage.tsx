@@ -69,7 +69,7 @@ interface PaymentRecord {
   payer_id: string;
   payee_id: string;
   amount: number;
-  status: "pending" | "completed";
+  status: "pending" | "paid" | "completed";
 }
 
 interface ChatMessage {
@@ -641,9 +641,13 @@ export default function RoomPage() {
   // Load and refresh score history when round completes or room completes
   useEffect(() => {
     if (room && (round?.status === "completed" || room.status === "finished")) {
-      fetchScoreHistory(room.id);
+      // Wait until all player scores for this round are computed in the database
+      const hasPendingScores = roundPlayers.some(rp => rp.score_this_round === null);
+      if (!hasPendingScores) {
+        fetchScoreHistory(room.id);
+      }
     }
-  }, [room?.status, round?.status, room?.id, players.length]);
+  }, [room?.status, round?.status, room?.id, players.length, roundPlayers]);
 
   const roomStatusRef = useRef(room?.status);
   useEffect(() => {
@@ -1950,6 +1954,68 @@ export default function RoomPage() {
     }
   };
 
+  const handleMarkAsPaid = async (paymentId: string) => {
+    try {
+      const { error } = await supabase
+        .from("payment_records")
+        .update({ status: "paid" })
+        .eq("id", paymentId);
+
+      if (error) throw error;
+      toast.success("Payment marked as paid! Awaiting payee confirmation.");
+      await fetchPayments(room!.id);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to mark payment as paid");
+    }
+  };
+
+  const handleRejectPayment = async (paymentId: string) => {
+    try {
+      const { error } = await supabase
+        .from("payment_records")
+        .update({ status: "pending" })
+        .eq("id", paymentId);
+
+      if (error) throw error;
+      toast.info("Payment marked as not received. Payer will be notified.");
+      await fetchPayments(room!.id);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update payment status");
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text)
+        .then(() => toast.success("UPI ID copied!"))
+        .catch(() => fallbackCopyText(text));
+    } else {
+      fallbackCopyText(text);
+    }
+  };
+
+  const fallbackCopyText = (text: string) => {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      const successful = document.execCommand("copy");
+      document.body.removeChild(textArea);
+      if (successful) {
+        toast.success("UPI ID copied!");
+      } else {
+        toast.error("Failed to copy UPI ID");
+      }
+    } catch (err) {
+      toast.error("Failed to copy UPI ID");
+    }
+  };
+
   const updateStatsEarnings = async (playerId: string, amt: number) => {
     const { data: stats } = await supabase
       .from("game_stats")
@@ -3182,13 +3248,7 @@ export default function RoomPage() {
                   const isPayerMe = pay.payer_id === user?.id;
                   const isPayeeMe = pay.payee_id === user?.id;
 
-                  // Construct UPI payment deep link
-                  // UPI url: upi://pay?pa=recipient@upi&pn=Name&am=50&cu=INR&tn=Rummy%20Settlement
                   const payeeUpi = payee?.upi_id || "";
-                  const payeeName = payee?.name || "Player";
-                  const upiUrl = payeeUpi
-                    ? `upi://pay?pa=${encodeURIComponent(payeeUpi)}&pn=${encodeURIComponent(payeeName)}&am=${pay.amount}&cu=INR&tn=Family%20Rummy%20-%20Room%20${room.room_code}`
-                    : "";
 
                   return (
                     <div
@@ -3203,40 +3263,101 @@ export default function RoomPage() {
                           {payer?.name} → {payee?.name}
                         </div>
                         <div className="text-[var(--color-text-muted)] mt-1 font-mono">
-                          Amount: ₹{pay.amount} | Status: <span className={pay.status === "completed" ? "text-emerald-400" : "text-amber-400 font-bold"}>{pay.status.toUpperCase()}</span>
+                          Amount: ₹{pay.amount} | Status:{" "}
+                          <span
+                            className={
+                              pay.status === "completed"
+                                ? "text-emerald-400"
+                                : pay.status === "paid"
+                                ? "text-amber-400 font-bold"
+                                : "text-slate-400"
+                            }
+                          >
+                            {pay.status === "completed"
+                              ? "SETTLED"
+                              : pay.status === "paid"
+                              ? "AWAITING CONFIRMATION"
+                              : "PENDING"}
+                          </span>
                         </div>
+                        {pay.status !== "completed" && (
+                          <div className="text-[var(--color-text-secondary)] mt-1 font-mono text-[11px]">
+                            {payeeUpi ? (
+                              <>
+                                UPI ID:{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(payeeUpi)}
+                                  className="font-bold text-emerald-400 hover:text-emerald-300 underline cursor-pointer focus:outline-none"
+                                  title="Click to copy"
+                                >
+                                  {payeeUpi}
+                                </button>
+                              </>
+                            ) : (
+                              <span className="text-[var(--color-text-muted)] italic">UPI ID not provided</span>
+                            )}
+                          </div>
+                        )}
                       </div>
 
-                      {/* Pay Button for Payer / Confirm Button for Payee */}
+                      {/* Pay/Confirm/Decline Actions */}
                       <div>
                         {pay.status !== "completed" && (
-                          <>
-                            {isPayerMe && upiUrl && (
-                              <a
-                                href={upiUrl}
-                                onClick={() => {
-                                  // Instantly update status locally for UX, and write payer confirm
-                                  toast.info("Opening UPI application...");
-                                }}
-                                className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md inline-flex items-center gap-1.5"
-                              >
-                                <Smartphone className="w-3.5 h-3.5" /> Pay Bet
-                              </a>
+                          <div className="flex flex-col sm:flex-row gap-2 items-end sm:items-center">
+                            {/* Payer view */}
+                            {isPayerMe && (
+                              <>
+                                {pay.status === "pending" && (
+                                  <button
+                                    onClick={() => handleMarkAsPaid(pay.id)}
+                                    className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                                  >
+                                    Mark as Paid
+                                  </button>
+                                )}
+                                {pay.status === "paid" && (
+                                  <span className="px-3 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                    Awaiting Confirm
+                                  </span>
+                                )}
+                              </>
                             )}
 
+                            {/* Payee view */}
                             {isPayeeMe && (
-                              <button
-                                onClick={() => handleConfirmPayment(pay.id)}
-                                className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-black shadow-md"
-                              >
-                                Confirm Recv
-                              </button>
+                              <>
+                                {pay.status === "pending" && (
+                                  <span className="text-[10px] text-[var(--color-text-muted)] italic">
+                                    Awaiting payment
+                                  </span>
+                                )}
+                                {pay.status === "paid" && (
+                                  <div className="flex gap-1.5">
+                                    <button
+                                      onClick={() => handleConfirmPayment(pay.id)}
+                                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                                    >
+                                      Confirm Recv
+                                    </button>
+                                    <button
+                                      onClick={() => handleRejectPayment(pay.id)}
+                                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white shadow-md transition-colors"
+                                    >
+                                      Not Received
+                                    </button>
+                                  </div>
+                                )}
+                              </>
                             )}
 
+                            {/* Spectator view */}
                             {!isPayerMe && !isPayeeMe && (
-                              <span className="text-[10px] text-[var(--color-text-muted)] italic">Awaiting payment</span>
+                              <span className="text-[10px] text-[var(--color-text-muted)] italic">
+                                {pay.status === "pending" ? "Awaiting payment" : "Awaiting confirmation"}
+                              </span>
                             )}
-                          </>
+                          </div>
                         )}
                         {pay.status === "completed" && (
                           <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
@@ -3552,14 +3673,25 @@ interface ScoreTrendChartProps {
 }
 
 function ScoreTrendChart({ scoreHistory, players }: ScoreTrendChartProps) {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 640);
+    };
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
   if (scoreHistory.length === 0) return null;
 
-  const width = 500;
-  const height = 220;
-  const paddingLeft = 35;
-  const paddingRight = 100;
-  const paddingTop = 20;
-  const paddingBottom = 30;
+  const width = isMobile ? 340 : 500;
+  const height = isMobile ? 200 : 220;
+  const paddingLeft = isMobile ? 30 : 35;
+  const paddingRight = isMobile ? 70 : 100;
+  const paddingTop = isMobile ? 15 : 20;
+  const paddingBottom = isMobile ? 25 : 30;
 
   const chartWidth = width - paddingLeft - paddingRight;
   const chartHeight = height - paddingTop - paddingBottom;
@@ -3627,11 +3759,17 @@ function ScoreTrendChart({ scoreHistory, players }: ScoreTrendChartProps) {
     xTicks.push(r);
   }
 
+  const tickFontSize = isMobile ? 9 : 10;
+  const labelFontSize = isMobile ? 9 : 11;
+  const labelYOffset = isMobile ? 3 : 3.5;
+  const labelXOffset = isMobile ? 6 : 8;
+  const nameLength = isMobile ? 8 : 10;
+
   return (
     <div className="w-full overflow-x-auto">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="w-full min-w-[400px] h-auto text-xs overflow-visible"
+        className="w-full h-auto text-xs overflow-visible"
       >
         {/* Horizontal grid lines */}
         {yTicks.map(tick => (
@@ -3645,12 +3783,12 @@ function ScoreTrendChart({ scoreHistory, players }: ScoreTrendChartProps) {
               strokeDasharray="4 4"
             />
             <text
-              x={paddingLeft - 8}
+              x={paddingLeft - (isMobile ? 6 : 8)}
               y={getY(tick) + 3}
               fill="rgba(255, 255, 255, 0.4)"
               textAnchor="end"
               className="font-mono font-bold"
-              fontSize="9"
+              fontSize={tickFontSize}
             >
               {tick}
             </text>
@@ -3670,11 +3808,11 @@ function ScoreTrendChart({ scoreHistory, players }: ScoreTrendChartProps) {
             />
             <text
               x={getX(tick)}
-              y={paddingTop + chartHeight + 14}
+              y={paddingTop + chartHeight + (isMobile ? 12 : 14)}
               fill="rgba(255, 255, 255, 0.4)"
               textAnchor="middle"
               className="font-semibold"
-              fontSize="9"
+              fontSize={tickFontSize}
             >
               R{tick}
             </text>
@@ -3739,14 +3877,14 @@ function ScoreTrendChart({ scoreHistory, players }: ScoreTrendChartProps) {
 
               {/* End line Label */}
               <text
-                x={finalPt.x + 8}
-                y={finalPt.y + 3}
+                x={finalPt.x + labelXOffset}
+                y={finalPt.y + labelYOffset}
                 fill={path.color}
-                fontSize="9"
+                fontSize={labelFontSize}
                 fontWeight="bold"
                 className="font-[Outfit]"
               >
-                {path.name.substring(0, 10)}
+                {path.name.substring(0, nameLength)}
               </text>
             </g>
           );

@@ -24,7 +24,7 @@ export default function RegisterPage() {
     setError("");
     setLoading(true);
 
-    if (!upiId.includes("@")) {
+    if (upiId && !upiId.includes("@")) {
       setError("Please enter a valid UPI ID (e.g. name@upi, mobile@ybl)");
       setLoading(false);
       return;
@@ -41,7 +41,7 @@ export default function RegisterPage() {
             mobile_number: mobileNumber,
             age: parseInt(age, 10),
             sex,
-            upi_id: upiId,
+            upi_id: upiId.trim() || null,
           },
         },
       });
@@ -204,14 +204,13 @@ export default function RegisterPage() {
               </label>
               <input
                 type="text"
-                required
                 value={upiId}
                 onChange={(e) => setUpiId(e.target.value)}
-                placeholder="username@bank"
+                placeholder="username@bank (optional)"
                 className="w-full px-3 py-2.5 text-sm rounded-xl bg-[var(--color-bg-default)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all"
               />
               <span className="text-[10px] text-[var(--color-text-muted)] block mt-1">
-                Required for quick pay and settlements.
+                Used for quick settlements (optional).
               </span>
             </div>
 
