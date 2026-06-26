@@ -157,4 +157,22 @@ describe("findOptimalGrouping", () => {
     const result = findOptimalGrouping(hand, Rank.SEVEN);
     expect(result.minimumPoints).toBe(67);
   });
+
+  it("should score user's hand with same-suit wild joker as exactly 28 points", () => {
+    // Hand:
+    // Pure Sequence (First Rummy): S7-S8-S9 (0 pts)
+    // Impure Sequence (Second Rummy): D2(wild)-D8-D9 (0 pts)
+    // Set: H10-S10-C10 (0 pts, since we have both sequences)
+    // Unmatched: HK(10), SK(10), H3(3), C5(5) -> 28 pts
+    const hand = [
+      H(Rank.KING), H(Rank.THREE),
+      S(Rank.KING), C(Rank.FIVE),
+      D(Rank.TWO), D(Rank.NINE), D(Rank.EIGHT),
+      S(Rank.SEVEN), S(Rank.NINE), S(Rank.EIGHT),
+      H(Rank.TEN), S(Rank.TEN), C(Rank.TEN)
+    ];
+
+    const result = findOptimalGrouping(hand, Rank.TWO);
+    expect(result.minimumPoints).toBe(28);
+  });
 });

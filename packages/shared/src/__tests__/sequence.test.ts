@@ -89,6 +89,13 @@ describe("isImpureSequence", () => {
       wildRank
     )).toBe(true);
   });
+
+  it("should accept sequence where wild joker has the same suit as sequence but acts as joker substitute", () => {
+    // 8♦-9♦-2♦ when 2 is wild
+    expect(isImpureSequence([D(Rank.EIGHT), D(Rank.NINE), D(Rank.TWO)], Rank.TWO)).toBe(true);
+    // 2♦-9♦-8♦ when 2 is wild (exact order from user hand)
+    expect(isImpureSequence([D(Rank.TWO), D(Rank.NINE), D(Rank.EIGHT)], Rank.TWO)).toBe(true);
+  });
 });
 
 describe("isValidSequence", () => {

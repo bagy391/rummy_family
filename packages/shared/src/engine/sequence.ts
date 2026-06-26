@@ -105,15 +105,14 @@ export function isImpureSequence(cards: readonly Card[], wildRank: Rank): boolea
 
   const suits = new Set(nonWildCards.map(c => c.suit));
   if (suits.size !== 1) return false;
-  const sequenceSuit = nonWildCards[0].suit;
 
   // Determine which cards are used as natural vs joker substitute
   const actualNatural: Card[] = [];
   let actualJokers = jokerCount;
 
   for (const card of naturalCards) {
-    if (isWildJoker(card, wildRank) && card.suit !== sequenceSuit) {
-      // Wild joker from different suit = joker substitute
+    if (isWildJoker(card, wildRank)) {
+      // All wild jokers are treated as joker substitutes in impure sequences
       actualJokers++;
     } else {
       actualNatural.push(card);
