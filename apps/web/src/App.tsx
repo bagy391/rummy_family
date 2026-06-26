@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { useAuthStore } from "@/stores/auth-store";
 import { supabase } from "@/lib/supabase";
 import LandingPage from "@/pages/LandingPage";
@@ -8,6 +8,20 @@ import RegisterPage from "@/pages/RegisterPage";
 import DashboardPage from "@/pages/DashboardPage";
 import RoomPage from "@/pages/RoomPage"; // We will create this next
 import { decodeCleanUTF8 } from "@/lib/utils";
+
+function RoomRouteGuard({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const { roomCode } = useParams<{ roomCode: string }>();
+
+  if (!isAuthenticated) {
+    if (roomCode) {
+      sessionStorage.setItem("redirect_to", `/room/${roomCode}`);
+    }
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
+}
 
 /**
  * Main application component with routing.
@@ -162,7 +176,11 @@ export default function App() {
       />
       <Route
         path="/room/:roomCode"
-        element={isAuthenticated ? <RoomPage /> : <Navigate to="/login" />}
+        element={
+          <RoomRouteGuard>
+            <RoomPage />
+          </RoomRouteGuard>
+        }
       />
 
       {/* Catch-all */}

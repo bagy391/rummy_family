@@ -426,6 +426,10 @@ export default function DashboardPage() {
 
       if (seatErr) throw seatErr;
 
+      if (occupiedPlayers && occupiedPlayers.length >= 9) {
+        throw new Error("This room lobby is full (max 9 players).");
+      }
+
       const seats = occupiedPlayers?.map((s) => s.seat_position) || [];
       let seatPosition = 0;
       while (seats.includes(seatPosition)) {

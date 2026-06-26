@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Trophy, ArrowLeft, Copy, Check, Info, Smartphone
+  Trophy, ArrowLeft, Copy, Check, Info, Smartphone, Share2
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
@@ -309,6 +309,9 @@ export default function RoomPage() {
     let active = true;
 
     async function loadRoom() {
+      const currentUser = user;
+      if (!currentUser) return;
+
       try {
         // Fetch room
         const { data: roomData, error: roomErr } = await supabase
@@ -324,10 +327,77 @@ export default function RoomPage() {
           }
           return;
         }
+        // Fetch players raw from DB to check if user is already in the room
+        const { data: rawPlayers, error: rawPlayersErr } = await supabase
+          .from("room_players")
+          .select("player_id, seat_position")
+          .eq("room_id", roomData.id);
+
+        if (rawPlayersErr) throw rawPlayersErr;
+
+        const isUserInRoom = rawPlayers?.some(p => p.player_id === currentUser.id);
+
+        if (!isUserInRoom && roomData.status === "waiting") {
+          // Check if kicked/banned from this room
+          const { data: kickedCheck } = await supabase
+            .from("kicked_players")
+            .select("id")
+            .eq("room_id", roomData.id)
+            .eq("player_id", currentUser.id)
+            .maybeSingle();
+
+          if (kickedCheck) {
+            if (active) {
+              toast.error("You have been kicked from this room lobby and cannot rejoin.");
+              window.location.href = "/dashboard";
+            }
+            return;
+          }
+
+          // Check if lobby is full (max 9 players)
+          if (rawPlayers && rawPlayers.length >= 9) {
+            if (active) {
+              toast.error("This room lobby is full (max 9 players).");
+              window.location.href = "/dashboard";
+            }
+            return;
+          }
+
+          // Find the first available seat position
+          const occupiedSeats = rawPlayers?.map(p => p.seat_position) || [];
+          let seatPosition = 0;
+          while (occupiedSeats.includes(seatPosition)) {
+            seatPosition++;
+          }
+
+          // Add self as room player
+          const { error: joinErr } = await supabase
+            .from("room_players")
+            .insert({
+              room_id: roomData.id,
+              player_id: currentUser.id,
+              seat_position: seatPosition,
+              status: "waiting",
+              is_admin: false,
+              total_score: 0,
+            });
+
+          if (joinErr) {
+            if (active) {
+              toast.error("Could not join room lobby.");
+            }
+            console.error("Join room error:", joinErr);
+          } else {
+            if (active) {
+              toast.success("Joined room lobby!");
+            }
+          }
+        }
+
         if (!active) return;
         setRoom(roomData);
 
-        // Fetch players
+        // Fetch players (now includes the newly joined user)
         await fetchPlayers(roomData.id);
         if (!active) return;
 
@@ -831,7 +901,9 @@ export default function RoomPage() {
         disconnected_at: x.disconnected_at,
       }));
       setPlayers(mapped);
+      return mapped;
     }
+    return [];
   }
 
   async function fetchPayments(roomId: string) {
@@ -2369,6 +2441,58 @@ export default function RoomPage() {
     }
   };
 
+  const handleShareRoom = async () => {
+    if (!roomCode) return;
+    const shareUrl = `${window.location.origin}/room/${roomCode}`;
+    const shareData = {
+      title: "Join my Family Rummy game!",
+      text: `Join my lobby with room code: ${roomCode}`,
+      url: shareUrl,
+    };
+
+    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+      try {
+        await navigator.share(shareData);
+        toast.success("Shared successfully!");
+      } catch (err: any) {
+        if (err.name !== "AbortError") {
+          console.error("Error sharing:", err);
+          fallbackCopyShareLink(shareUrl);
+        }
+      }
+    } else {
+      fallbackCopyShareLink(shareUrl);
+    }
+  };
+
+  const fallbackCopyShareLink = (url: string) => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(url);
+        toast.success("Join link copied to clipboard!");
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = url;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const successful = document.execCommand("copy");
+        document.body.removeChild(textArea);
+        if (successful) {
+          toast.success("Join link copied to clipboard!");
+        } else {
+          throw new Error("Copy failed");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to copy link:", err);
+      toast.error("Could not copy join link automatically.");
+    }
+  };
+
 
 
   const sendMessage = async (msgText: string) => {
@@ -2903,12 +3027,22 @@ export default function RoomPage() {
                     <span className="text-[10px] text-[var(--color-text-muted)] block font-semibold">ROOM CODE</span>
                     <span className="text-2xl font-bold font-[Outfit] tracking-wider text-emerald-400">{room.room_code}</span>
                   </div>
-                  <button
-                    onClick={handleCopyCode}
-                    className="p-3 rounded-lg hover:bg-[var(--color-bg-card)] border border-transparent hover:border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-white transition-all"
-                  >
-                    {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleCopyCode}
+                      className="p-3 rounded-lg hover:bg-[var(--color-bg-card)] border border-transparent hover:border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-white transition-all"
+                      title="Copy Room Code"
+                    >
+                      {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
+                    </button>
+                    <button
+                      onClick={handleShareRoom}
+                      className="p-3 rounded-lg hover:bg-[var(--color-bg-card)] border border-transparent hover:border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:text-white transition-all flex items-center justify-center"
+                      title="Share Invite Link"
+                    >
+                      <Share2 className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 mb-6">
@@ -2918,7 +3052,7 @@ export default function RoomPage() {
                   </div>
                   <div className="p-3 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)]">
                     <span className="text-[10px] text-[var(--color-text-muted)] block">PLAYERS ONLINE</span>
-                    <span className="text-lg font-bold font-[Outfit] text-emerald-400">{players.length} / 6</span>
+                    <span className="text-lg font-bold font-[Outfit] text-emerald-400">{players.length} / 9</span>
                   </div>
                 </div>
 

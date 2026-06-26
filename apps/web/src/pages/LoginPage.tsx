@@ -53,7 +53,13 @@ export default function LoginPage() {
         });
 
         toast.success("Successfully logged in!");
-        navigate("/dashboard");
+        const redirectTo = sessionStorage.getItem("redirect_to");
+        if (redirectTo) {
+          sessionStorage.removeItem("redirect_to");
+          navigate(redirectTo);
+        } else {
+          navigate("/dashboard");
+        }
       }
     } catch (err: any) {
       setError(err.message || "Invalid credentials. Please try again.");
