@@ -54,6 +54,34 @@ describe("isPureSequence", () => {
     expect(isPureSequence([H(Rank.SIX), D(Rank.SEVEN), H(Rank.EIGHT)], wildRank)).toBe(false);
   });
 
+  it("should reject wild joker of SAME suit used as gap substitute (the real bug case)", () => {
+    // 4♠-9♠-5♠ when wild=9 — 9♠ is wild AND same suit as sequence
+    // 9♠ is filling the gap for 6♠ (not in its natural rank+suit position)
+    // This MUST be impure, not pure — this is the exact Godamani hand scenario
+    expect(isPureSequence([S(Rank.FOUR), S(Rank.NINE), S(Rank.FIVE)], Rank.NINE)).toBe(false);
+  });
+
+  it("should reject wild joker of same suit filling a non-consecutive gap", () => {
+    // 3♥-7♥-6♥ when wild=7 — 7♥ is in natural suit but the natural order is 5♥-6♥-7♥
+    // Here 7♥ would be filling gap between 3 and 6 (gap of 2), not natural position
+    expect(isPureSequence([H(Rank.THREE), H(Rank.SEVEN), H(Rank.SIX)], wildRank)).toBe(false);
+  });
+
+  it("should reject multiple wild jokers used as substitutes in a pure sequence", () => {
+    // 4♠-9♠(deck0)-9♠(deck1) when wild=9 — two 9♠s both acting as substitutes, not consecutive
+    expect(isPureSequence([S(Rank.FOUR), S(Rank.NINE, 0), S(Rank.NINE, 1)], Rank.NINE)).toBe(false);
+  });
+
+  it("should accept wild joker in natural position at START of sequence", () => {
+    // 7♥-8♥-9♥ when wild=7 — 7♥ is wild but naturally the first card
+    expect(isPureSequence([H(Rank.SEVEN), H(Rank.EIGHT), H(Rank.NINE)], wildRank)).toBe(true);
+  });
+
+  it("should accept wild joker in natural position at END of sequence", () => {
+    // 5♥-6♥-7♥ when wild=7 — 7♥ is wild but naturally the last card
+    expect(isPureSequence([H(Rank.FIVE), H(Rank.SIX), H(Rank.SEVEN)], wildRank)).toBe(true);
+  });
+
   it("should accept 5-card pure sequence", () => {
     expect(isPureSequence(
       [C(Rank.THREE), C(Rank.FOUR), C(Rank.FIVE), C(Rank.SIX), C(Rank.EIGHT)],
@@ -61,6 +89,7 @@ describe("isPureSequence", () => {
     )).toBe(false); // Not consecutive (missing 7)
   });
 });
+
 
 describe("isImpureSequence", () => {
   const wildRank = Rank.SEVEN;
@@ -95,6 +124,23 @@ describe("isImpureSequence", () => {
     expect(isImpureSequence([D(Rank.EIGHT), D(Rank.NINE), D(Rank.TWO)], Rank.TWO)).toBe(true);
     // 2♦-9♦-8♦ when 2 is wild (exact order from user hand)
     expect(isImpureSequence([D(Rank.TWO), D(Rank.NINE), D(Rank.EIGHT)], Rank.TWO)).toBe(true);
+  });
+
+  it("should accept Ace-high impure sequence with printed joker (Q-K-Joker=A)", () => {
+    expect(isImpureSequence([H(Rank.QUEEN), H(Rank.KING), PJ()], wildRank)).toBe(true);
+  });
+
+  it("should accept Ace-low impure sequence with printed joker (Joker=A-2-3)", () => {
+    expect(isImpureSequence([PJ(), H(Rank.TWO), H(Rank.THREE)], wildRank)).toBe(true);
+  });
+
+  it("should accept 1 natural card + 2 jokers forming a 3-card impure sequence", () => {
+    // PJ-5♥-PJ — jokers fill 4♥ and 6♥ around the 5♥
+    expect(isImpureSequence([PJ(0), H(Rank.FIVE), PJ(1)], wildRank)).toBe(true);
+  });
+
+  it("should reject 3 jokers with no natural card", () => {
+    expect(isImpureSequence([PJ(0), PJ(1), PJ(2)], wildRank)).toBe(false);
   });
 });
 

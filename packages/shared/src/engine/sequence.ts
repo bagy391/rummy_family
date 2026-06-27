@@ -25,8 +25,9 @@ import { rankToNumber } from "../utils/card-utils.js";
 export function isPureSequence(cards: readonly Card[], wildRank: Rank): boolean {
   if (cards.length < 3) return false;
 
-  // Separate natural cards and jokers
+  // Separate natural cards from wild jokers
   const naturalCards: Card[] = [];
+  const wildJokers: Card[] = [];
 
   for (const card of cards) {
     if (isPrintedJoker(card)) {
@@ -34,30 +35,33 @@ export function isPureSequence(cards: readonly Card[], wildRank: Rank): boolean 
       return false;
     }
     if (isWildJoker(card, wildRank)) {
-      // Check if it's in its natural position — we'll verify after sorting
-      naturalCards.push(card);
+      // Track wild jokers separately — they may only be used in natural position
+      wildJokers.push(card);
     } else {
       naturalCards.push(card);
     }
   }
 
-  // All cards must be the same suit (excluding joker suit)
+  // All non-joker cards must be the same suit
   const suits = new Set(naturalCards.map(c => c.suit));
   if (suits.size !== 1) return false;
   const sequenceSuit = naturalCards[0].suit;
   if (sequenceSuit === Suit.JOKER) return false;
 
-  // Sort by rank number
-  const sorted = [...naturalCards].sort((a, b) => rankToNumber(a.rank) - rankToNumber(b.rank));
+  // Wild jokers in a pure sequence MUST be in their natural position
+  // (same suit as the sequence). Any wild joker of a different suit is a substitute → impure.
+  for (const joker of wildJokers) {
+    if (!isWildJokerInNaturalPosition(joker, wildRank, sequenceSuit)) {
+      return false;
+    }
+  }
+
+  // Combine and sort all cards (natural + wild jokers in natural position)
+  const allCards = [...naturalCards, ...wildJokers];
+  const sorted = [...allCards].sort((a, b) => rankToNumber(a.rank) - rankToNumber(b.rank));
 
   // Check consecutive — handle Ace-high case
   if (isConsecutive(sorted)) {
-    // Verify no wild joker is used as a substitute (not in natural position)
-    for (const card of sorted) {
-      if (isWildJoker(card, wildRank) && !isWildJokerInNaturalPosition(card, wildRank, sequenceSuit)) {
-        return false;
-      }
-    }
     return true;
   }
 

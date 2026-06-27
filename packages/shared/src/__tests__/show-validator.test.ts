@@ -31,10 +31,20 @@ describe("classifyGroup", () => {
     expect(group.points).toBe(0);
   });
 
-  it("should classify impure sequence", () => {
+  it("should classify impure sequence with printed joker", () => {
     const group = classifyGroup(
       [D(Rank.THREE), PJ(), D(Rank.FIVE)],
       wildRank
+    );
+    expect(group.type).toBe(GroupType.IMPURE_SEQUENCE);
+    expect(group.points).toBe(0);
+  });
+
+  it("should classify wild joker same-suit as IMPURE (not PURE) when used as substitute", () => {
+    // 4♠-9♠-5♠ when wild=9 — 9♠ is wild and same suit but fills the gap, NOT natural position
+    const group = classifyGroup(
+      [S(Rank.FOUR), S(Rank.NINE), S(Rank.FIVE)],
+      Rank.NINE
     );
     expect(group.type).toBe(GroupType.IMPURE_SEQUENCE);
     expect(group.points).toBe(0);
@@ -94,18 +104,39 @@ describe("validateShow", () => {
   });
 
   it("should reject show without Second Rummy", () => {
+    // wildRank = TWO, so all 2s are jokers — avoid using 2s as natural cards
     const groups = [
-      // First Rummy: Pure sequence
+      // First Rummy: Pure sequence (only one)
       [H(Rank.THREE), H(Rank.FOUR), H(Rank.FIVE)],
       // All sets, no second sequence
       [H(Rank.KING), D(Rank.KING), C(Rank.KING)],
       [H(Rank.ACE), D(Rank.ACE), C(Rank.ACE)],
-      [S(Rank.TEN), S(Rank.JACK), S(Rank.QUEEN), S(Rank.KING)],
+      [H(Rank.SIX), D(Rank.SIX), C(Rank.SIX), S(Rank.SIX)],
     ];
     const result = validateShow(groups, wildRank);
-    // The last group IS a pure sequence — so it would count as second rummy
-    // Let me fix this test to actually not have a second sequence
-    // Actually S-10,J,Q,K IS a pure sequence, so this test needs different cards
+    expect(result.hasFirstRummy).toBe(true);
+    expect(result.hasSecondRummy).toBe(false);
+    expect(result.isValid).toBe(false);
+    expect(result.errors).toContain("Missing Second Rummy (second sequence, jokers allowed)");
+  });
+
+  it("should accept Godamani's exact hand (real-world bug scenario, wild=9)", () => {
+    // Round 4 hand: joker=9, show card=K♥, 13 remaining cards
+    // Group 1: Printed Joker + K♥ + Q♥  → impure sequence (J♥-Q♥-K♥ with PJ)
+    // Group 2: 4♣-5♣-6♣-7♣             → pure sequence (First Rummy)
+    // Group 3: 10♥-10♠-10♣             → set
+    // Group 4: 4♠-[9♠=Joker]-5♠        → impure sequence (Second Rummy)
+    const groups = [
+      [PJ(), H(Rank.KING), H(Rank.QUEEN)],
+      [C(Rank.FOUR), C(Rank.FIVE), C(Rank.SIX), C(Rank.SEVEN)],
+      [H(Rank.TEN), S(Rank.TEN), C(Rank.TEN)],
+      [S(Rank.FOUR), S(Rank.NINE), S(Rank.FIVE)],
+    ];
+    const result = validateShow(groups, Rank.NINE);
+    expect(result.isValid).toBe(true);
+    expect(result.hasFirstRummy).toBe(true);
+    expect(result.hasSecondRummy).toBe(true);
+    expect(result.unmatchedPoints).toBe(0);
   });
 
   it("should reject wrong card count", () => {
