@@ -1444,7 +1444,16 @@ export default function RoomPage() {
 
       if (roomErr) throw roomErr;
 
-      // 2. Start round 1
+      // 2. Transition all waiting players to active status
+      const { error: playersErr } = await supabase
+        .from("room_players")
+        .update({ status: "active" })
+        .eq("room_id", room.id)
+        .eq("status", "waiting");
+
+      if (playersErr) throw playersErr;
+
+      // 3. Start round 1
       await startNewRound(1);
     } catch (err: any) {
       toast.error(err.message || "Failed to start game");
@@ -2790,7 +2799,7 @@ export default function RoomPage() {
     if (!room || room.status !== "active" || !isAdmin) return;
 
     const activePlayers = players.filter(
-      p => p.status === "active" || p.status === "disconnected"
+      p => p.status === "active" || p.status === "waiting" || p.status === "disconnected"
     );
 
     if (activePlayers.length <= 1) {
