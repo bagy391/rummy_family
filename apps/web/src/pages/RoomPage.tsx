@@ -19,6 +19,8 @@ import GameScreen from "@/components/game/GameScreen";
 import PostRoundModal from "@/components/game/PostRoundModal";
 import PlayingCard from "@/components/game/PlayingCard";
 import { decodeCleanUTF8 } from "@/lib/utils";
+import { useVoiceChat, uidFromUserId } from "@/lib/useVoiceChat";
+import VoicePanel from "@/components/game/VoicePanel";
 
 
 interface Room {
@@ -28,6 +30,7 @@ interface Room {
   status: "waiting" | "active" | "finished";
   bet_amount: number;
   current_round_number: number;
+  voice_chat_enabled?: boolean;
 }
 
 interface RoomPlayer {
@@ -175,6 +178,9 @@ export default function RoomPage() {
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
   const chatChannelRef = useRef<any>(null);
 
+  // Voice chat state
+  const [isVoiceOpen, setIsVoiceOpen] = useState(false);
+
   // Mutual Quit voting state
   const [activeQuitVote, setActiveQuitVote] = useState<QuitVoteState | null>(null);
 
@@ -280,6 +286,27 @@ export default function RoomPage() {
   const myRoundState = roundPlayers.find(p => p.player_id === user?.id);
   const isAdmin = me?.is_admin || false;
   const isMyTurn = round?.current_turn_player_id === user?.id && round?.status === "active";
+
+  // Build uid→name map for voice chat participant labelling
+  const uidToName: Record<number, string> = {};
+  players.forEach(p => {
+    uidToName[uidFromUserId(p.player_id)] = p.name;
+  });
+
+  const voice = useVoiceChat({
+    roomCode: roomCode || "",
+    userName: me?.name || user?.email || "Player",
+    userId: user?.id || "",
+    uidToName,
+  });
+  const isVoiceChatEnabled = room?.voice_chat_enabled ?? true;
+
+  useEffect(() => {
+    if (!isVoiceChatEnabled && voice.isInVoice) {
+      voice.leave();
+    }
+  }, [isVoiceChatEnabled, voice.isInVoice]);
+
   const isDropped = myRoundState?.status === "dropped_first" || myRoundState?.status === "dropped_second";
 
   const isSpectator: boolean =
@@ -1423,6 +1450,22 @@ export default function RoomPage() {
       toast.error(err.message || "Failed to start game");
     } finally {
       setLoadingAction(false);
+    }
+  };
+
+  const handleToggleVoice = async (enabled: boolean) => {
+    if (!room) return;
+    try {
+      const { error } = await supabase
+        .from("rooms")
+        .update({ voice_chat_enabled: enabled })
+        .eq("id", room.id);
+
+      if (error) throw error;
+      toast.success(enabled ? "Voice chat enabled" : "Voice chat disabled");
+    } catch (err: any) {
+      console.error("Toggle voice error:", err);
+      toast.error("Failed to update voice chat settings");
     }
   };
 
@@ -3056,6 +3099,46 @@ export default function RoomPage() {
                   </div>
                 </div>
 
+                {/* Voice Chat Setting */}
+                <div className="mb-6 p-3.5 rounded-xl bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)] flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg ${isVoiceChatEnabled ? "bg-emerald-500/15 text-emerald-400" : "bg-white/5 text-white/35"}`}>
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </svg>
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-white/80 block">Voice Chat Settings</span>
+                      <span className="text-[9px] text-white/40 block leading-tight">
+                        {isVoiceChatEnabled ? "Players can talk in voice" : "Voice chat is disabled"}
+                      </span>
+                    </div>
+                  </div>
+                  {isAdmin ? (
+                    <button
+                      onClick={() => handleToggleVoice(!isVoiceChatEnabled)}
+                      className={`px-3 py-1.5 rounded-lg font-bold text-xs border transition-all ${
+                        isVoiceChatEnabled
+                          ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/25"
+                          : "bg-white/5 text-white/40 border-white/10 hover:bg-white/10"
+                      }`}
+                    >
+                      {isVoiceChatEnabled ? "Enabled" : "Disabled"}
+                    </button>
+                  ) : (
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                      isVoiceChatEnabled
+                        ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                        : "bg-white/5 text-white/30 border-white/10"
+                    }`}>
+                      {isVoiceChatEnabled ? "ACTIVE" : "DISABLED"}
+                    </span>
+                  )}
+                </div>
+
                 {/* Players List */}
                 <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-3">Players Waiting</h3>
                 <div className="space-y-2 mb-6 max-h-[180px] overflow-y-auto pr-1">
@@ -3120,22 +3203,46 @@ export default function RoomPage() {
               </div>
             </motion.div>
 
-            {/* Chat Panel in Lobby */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="w-full md:w-80 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-xl p-4 flex flex-col h-[400px] md:h-auto"
-            >
-              <h3 className="font-bold text-base mb-3 pb-2 border-b border-[var(--color-border-default)] font-[Outfit] text-emerald-400">Lobby Chat</h3>
-              <div className="flex-1 min-h-0">
-                <ChatContent
-                  chatMessages={chatMessages}
-                  userId={user?.id}
-                  onSendMessage={sendMessage}
-                  onSendReaction={sendEmojiReaction}
-                />
-              </div>
-            </motion.div>
+            {/* Right column: Chat + Voice */}
+            <div className="w-full md:w-80 flex flex-col gap-4">
+              {/* Chat Panel in Lobby */}
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-xl p-4 flex flex-col h-[300px] md:h-[340px]"
+              >
+                <h3 className="font-bold text-base mb-3 pb-2 border-b border-[var(--color-border-default)] font-[Outfit] text-emerald-400">Lobby Chat</h3>
+                <div className="flex-1 min-h-0">
+                  <ChatContent
+                    chatMessages={chatMessages}
+                    userId={user?.id}
+                    onSendMessage={sendMessage}
+                    onSendReaction={sendEmojiReaction}
+                  />
+                </div>
+              </motion.div>
+
+              {/* Voice Panel in Lobby */}
+              {isVoiceChatEnabled && (
+                <motion.div
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.05 }}
+                  className="rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-xl p-4"
+                >
+                  <VoicePanel
+                    isInVoice={voice.isInVoice}
+                    isMuted={voice.isMuted}
+                    isJoining={voice.isJoining}
+                    voiceParticipants={voice.voiceParticipants}
+                    error={voice.error}
+                    onJoin={voice.join}
+                    onLeave={voice.leave}
+                    onToggleMute={voice.toggleMute}
+                  />
+                </motion.div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -3238,6 +3345,45 @@ export default function RoomPage() {
                 </div>
               </div>
             }
+            voiceContent={
+              isVoiceChatEnabled ? (
+                <button
+                  onClick={() => setIsVoiceOpen(v => !v)}
+                  className={`w-full py-1 sm:py-1.5 md:py-2 rounded-lg border text-[8px] sm:text-[9px] md:text-[10px] lg:text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-1 md:gap-1.5 transition-all duration-200 select-none ${
+                    voice.isInVoice
+                      ? "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-500"
+                      : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                  }`}
+                  title="Voice Chat Panel"
+                >
+                  {/* Voice Speaker Icon */}
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                    {voice.isMuted ? (
+                      <>
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </>
+                    ) : (
+                      <>
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                        <line x1="12" y1="19" x2="12" y2="23" />
+                        <line x1="8" y1="23" x2="16" y2="23" />
+                      </>
+                    )}
+                  </svg>
+                  <span className="truncate">
+                    {voice.isInVoice ? `Voice (${voice.voiceParticipants.length})` : "Voice"}
+                  </span>
+                  {voice.isInVoice && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+                  )}
+                </button>
+              ) : undefined
+            }
           />
 
           {/* Chat Drawer Overlay */}
@@ -3271,6 +3417,45 @@ export default function RoomPage() {
                       onSendReaction={sendEmojiReaction}
                     />
                   </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+
+          {/* Voice Drawer Overlay (in-game) */}
+          <AnimatePresence>
+            {isVoiceOpen && (
+              <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
+                <div className="flex-1" onClick={() => setIsVoiceOpen(false)} />
+                <motion.div
+                  initial={{ x: "100%" }}
+                  animate={{ x: 0 }}
+                  exit={{ x: "100%" }}
+                  transition={{ type: "tween", duration: 0.25 }}
+                  className="w-full max-w-xs bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4"
+                >
+                  <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
+                    <h3 className="font-bold text-lg font-[Outfit] text-emerald-400">Voice Chat</h3>
+                    <button
+                      onClick={() => setIsVoiceOpen(false)}
+                      className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <VoicePanel
+                    isInVoice={voice.isInVoice}
+                    isMuted={voice.isMuted}
+                    isJoining={voice.isJoining}
+                    voiceParticipants={voice.voiceParticipants}
+                    error={voice.error}
+                    onJoin={voice.join}
+                    onLeave={voice.leave}
+                    onToggleMute={voice.toggleMute}
+                    compact
+                  />
                 </motion.div>
               </div>
             )}

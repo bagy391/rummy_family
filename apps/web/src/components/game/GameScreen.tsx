@@ -87,6 +87,9 @@ interface GameScreenProps {
   // Custom row grouping props
   rowSizes?: { id: string; size: number }[];
   onRowSizesChange?: (sizes: { id: string; size: number }[]) => void;
+
+  // Voice chat content slot
+  voiceContent?: React.ReactNode;
 }
 
 export default function GameScreen({
@@ -128,6 +131,7 @@ export default function GameScreen({
   spectatorContent,
   rowSizes,
   onRowSizesChange,
+  voiceContent,
 }: GameScreenProps) {
 
 
@@ -201,6 +205,7 @@ export default function GameScreen({
         spectatorContent={spectatorContent}
         rowSizes={rowSizes}
         onRowSizesChange={onRowSizesChange}
+        voiceContent={voiceContent}
       />
 
       {/* Chat FAB */}

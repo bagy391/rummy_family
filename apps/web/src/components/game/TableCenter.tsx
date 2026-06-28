@@ -50,6 +50,9 @@ interface TableCenterProps {
   rowSizes?: { id: string; size: number }[];
   onRowSizesChange?: (sizes: { id: string; size: number }[]) => void;
   boardOnly?: boolean;
+
+  // Voice chat content slot (rendered above Show Info)
+  voiceContent?: React.ReactNode;
 }
 
 function healRowSizes(currentSizes: { id: string; size: number }[], handLength: number) {
@@ -133,6 +136,7 @@ export default function TableCenter({
   rowSizes: propRowSizes,
   onRowSizesChange,
   boardOnly = false,
+  voiceContent,
 }: TableCenterProps) {
   const canDraw = isMyTurn && !hasDrawnThisTurn;
   const canDiscard = isMyTurn && hasDrawnThisTurn;
@@ -770,6 +774,13 @@ export default function TableCenter({
 
         {/* Right Section: Sidebar (Controls, Stats, Piles, Actions) */}
         <div className="w-[105px] sm:w-[130px] md:w-[150px] lg:w-[170px] shrink-0 bg-[#2D5265]/20 border border-white/5 rounded-2xl p-1.5 sm:p-2.5 md:p-3.5 lg:p-4.5 pb-3 sm:pb-5 md:pb-7 lg:pb-9 flex flex-col gap-2 sm:gap-3.5 md:gap-4.5 lg:gap-5.5 items-center justify-start backdrop-blur-sm shadow-md transition-all duration-200">
+
+          {/* Voice content slot — above Show Info */}
+          {voiceContent && (
+            <div className="w-full shrink-0">
+              {voiceContent}
+            </div>
+          )}
 
           {/* Collapsible Info/Settings Panel */}
           <div className="w-full flex flex-col gap-1.5 shrink-0 select-none">
