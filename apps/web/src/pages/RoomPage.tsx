@@ -2785,6 +2785,45 @@ export default function RoomPage() {
     }
   }, [activeQuitVote, room?.id, round?.id, me?.is_admin]);
 
+  // Auto-finish game if only 1 active player remains (monitored by the host/admin client)
+  useEffect(() => {
+    if (!room || room.status !== "active" || !isAdmin) return;
+
+    const activePlayers = players.filter(
+      p => p.status === "active" || p.status === "disconnected"
+    );
+
+    if (activePlayers.length <= 1) {
+      const finalizeGame = async () => {
+        try {
+          const winner = activePlayers[0];
+          if (winner) {
+            const winnerId = winner.player_id;
+            await generateBetPayments(winnerId);
+
+            const finalScoresMap: Record<string, number> = {};
+            for (const p of players) {
+              finalScoresMap[p.player_id] = p.total_score;
+            }
+            await updateGameFinishedStats([winnerId], finalScoresMap);
+          }
+
+          // Complete the game in DB
+          await supabase
+            .from("rooms")
+            .update({ status: "finished" })
+            .eq("id", room.id);
+
+          toast.success("Game completed — only one active player remains!");
+        } catch (err: any) {
+          console.error("Auto-finalize game failed:", err);
+        }
+      };
+
+      finalizeGame();
+    }
+  }, [players, room?.status, room?.id, isAdmin]);
+
   // Leave Share Vote Resolution Effect
   useEffect(() => {
     if (!activeLeaveShareVote || !room || !round) return;
