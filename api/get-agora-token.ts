@@ -1,5 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { RtcTokenBuilder, RtcRole } from "agora-token";
+import pkg from "agora-token";
+
+// Support both ES Module default bundling and direct CJS exports
+const RtcTokenBuilder = (pkg as any).RtcTokenBuilder || (pkg as any).default?.RtcTokenBuilder;
+const RtcRole = (pkg as any).RtcRole || (pkg as any).default?.RtcRole;
 
 /**
  * POST /api/get-agora-token
