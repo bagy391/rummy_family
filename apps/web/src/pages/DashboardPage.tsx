@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { LogOut, Trophy, Plus, LogIn, User, Sparkles, Lock, RefreshCw } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -38,8 +38,9 @@ export default function DashboardPage() {
   const [history, setHistory] = useState<any[]>([]);
   const [pendingPayments, setPendingPayments] = useState<any[]>([]);
   const [activeRooms, setActiveRooms] = useState<any[]>([]);
+  const lastFetchedAt = useRef<number>(0);
 
-  async function fetchDashboardData() {
+  const fetchDashboardData = useCallback(async () => {
     if (!user) return;
     
     try {
@@ -158,14 +159,48 @@ export default function DashboardPage() {
       }
     } catch (err) {
       console.error("Dashboard fetching failed:", err);
+    } finally {
+      lastFetchedAt.current = Date.now();
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
-  // Fetch stats, leaderboard, history, and payments
+  // Fetch on mount / whenever the authenticated user changes (use stable user.id primitive)
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     fetchDashboardData();
-  }, [user]);
+  }, [user?.id, fetchDashboardData]);
+
+  // Refetch when tab becomes visible again after being hidden (handles long idle / background tab)
+  useEffect(() => {
+    const STALE_THRESHOLD_MS = 60 * 1000; // 60 seconds
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && user?.id) {
+        const elapsed = Date.now() - lastFetchedAt.current;
+        if (elapsed > STALE_THRESHOLD_MS) {
+          fetchDashboardData();
+        }
+      }
+    };
+
+    const handleWindowFocus = () => {
+      if (user?.id) {
+        const elapsed = Date.now() - lastFetchedAt.current;
+        if (elapsed > STALE_THRESHOLD_MS) {
+          fetchDashboardData();
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleWindowFocus);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleWindowFocus);
+    };
+  }, [user?.id, fetchDashboardData]);
 
   const handleConfirmPayment = async (paymentId: string, payeeId: string, payerId: string, amount: number) => {
     try {

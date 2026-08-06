@@ -1017,16 +1017,37 @@ export default function RoomPage() {
 
         setRoundPlayers(merged);
 
-        // Auto-declare winner if only 1 active player remains
+        // Auto-declare winner if only 1 active player remains.
+        // IMPORTANT: skip if any player already has status "winner" or "shown_valid" —
+        // that means someone just clicked Declare and their round_players update
+        // fired before the round.status="completed" update arrived. Without this guard,
+        // when a 3rd player is dropped (reducing active count to 2) and then the
+        // declarer's status flips to "winner" (reducing active count to 1), this
+        // block would wrongly call declareRoundWinner on the only remaining active
+        // player — creating two winners.
+        //
+        // Also count "shown_wrong" players as still in-game: a wrong-show gives 80pt
+        // penalty but the player stays in the round. Without this, after a wrong show
+        // in a game with only 2 playing (one already dropped), the remaining "active"
+        // player would be wrongly auto-declared winner mid-round.
         if (currentStatus === "active") {
-          const activeRoundPlayers = merged.filter(p => p.status === "active");
-          if (activeRoundPlayers.length === 1 && activeRoundPlayers[0]) {
-            const winnerId = activeRoundPlayers[0].player_id;
-            const amIWinner = winnerId === user?.id;
+          const alreadyHasWinner = merged.some(
+            (p) => p.status === "winner" || p.status === "shown_valid"
+          );
+          // Players still participating in the round (active OR wrong-show penalty)
+          const stillInRound = merged.filter(
+            (p) => p.status === "active" || p.status === "shown_wrong"
+          );
+          if (!alreadyHasWinner && stillInRound.length === 1 && stillInRound[0]?.status === "active") {
+            const winnerId = stillInRound[0].player_id;
+            // Only one client should call declareRoundWinner to avoid duplicate
+            // ROUND_ENDED game_events. Prefer admin; winner calls it only if no
+            // admin client is present (i.e., winner IS the admin, or no admin exists).
             const currentMe = playersRef.current.find(p => p.player_id === user?.id);
             const amIAdmin = currentMe?.is_admin || false;
+            const amIWinner = winnerId === user?.id;
 
-            if (amIWinner || amIAdmin) {
+            if (amIAdmin || (!amIAdmin && amIWinner)) {
               declareRoundWinner(winnerId);
             }
           }
@@ -1315,8 +1336,9 @@ export default function RoomPage() {
               .eq("round_id", round.id)
               .eq("player_id", targetPlayerId);
 
+            // Include shown_wrong players — they still participate in turns
             const remainingActive = roundPlayers.filter(
-              p => p.player_id !== targetPlayerId && p.status === "active"
+              p => p.player_id !== targetPlayerId && (p.status === "active" || p.status === "shown_wrong")
             );
             if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
               const nextPlayerId = getNextPlayerId(targetPlayerId);
@@ -1327,6 +1349,22 @@ export default function RoomPage() {
                   turn_order_index: round.turn_order_index + 1,
                 })
                 .eq("id", round.id);
+            } else if (remainingActive.length === 1 && remainingActive[0]?.status === "active") {
+              // Only 1 active player left after elimination — complete the round
+              await supabase
+                .from("rounds")
+                .update({ status: "completed", current_turn_player_id: null })
+                .eq("id", round.id);
+
+              const winnerId = remainingActive[0].player_id;
+              await supabase.from("game_events").insert({
+                round_id: round.id,
+                room_id: room?.id,
+                player_id: winnerId,
+                sequence_number: round.turn_order_index + 1,
+                event_type: "ROUND_ENDED",
+                event_data: { winnerId, reason: "Last player remaining after admin eliminate" },
+              });
             }
           }
           toast.success("Player eliminated from game");
@@ -1342,8 +1380,9 @@ export default function RoomPage() {
               .eq("round_id", round.id)
               .eq("player_id", targetPlayerId);
 
+            // Include shown_wrong players — they still participate in turns
             const remainingActive = roundPlayers.filter(
-              p => p.player_id !== targetPlayerId && p.status === "active"
+              p => p.player_id !== targetPlayerId && (p.status === "active" || p.status === "shown_wrong")
             );
             if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
               const nextPlayerId = getNextPlayerId(targetPlayerId);
@@ -1354,6 +1393,22 @@ export default function RoomPage() {
                   turn_order_index: round.turn_order_index + 1,
                 })
                 .eq("id", round.id);
+            } else if (remainingActive.length === 1 && remainingActive[0]) {
+              // Only 1 player left — complete the round immediately
+              await supabase
+                .from("rounds")
+                .update({ status: "completed", current_turn_player_id: null })
+                .eq("id", round.id);
+
+              const winnerId = remainingActive[0].player_id;
+              await supabase.from("game_events").insert({
+                round_id: round.id,
+                room_id: room?.id,
+                player_id: winnerId,
+                sequence_number: round.turn_order_index + 1,
+                event_type: "ROUND_ENDED",
+                event_data: { winnerId, reason: "Last player remaining after admin drop" },
+              });
             }
           }
           toast.success("Player dropped for current round");
@@ -1732,17 +1787,15 @@ export default function RoomPage() {
 
     try {
       if (localResult.isValid) {
-        // Valid Show:
-        // 1. Update own status to 'winner'
-        const { error: rpErr } = await supabase
-          .from("round_players")
-          .update({ status: "winner" })
-          .eq("round_id", round.id)
-          .eq("player_id", user?.id);
+        // Valid Show — write order matters for race condition safety:
+        // We complete the round FIRST, then mark ourselves as winner.
+        // This way, when the round_players realtime event fires (status→winner),
+        // all clients will see roundRef.current.status === "completed" and route
+        // to the completed branch of fetchRoundPlayers (which does score
+        // calculation) rather than the "active" auto-declare branch (which would
+        // wrongly see 1 remaining active player and declare them winner too).
 
-        if (rpErr) throw rpErr;
-
-        // 2. Discard the show card (add to discard pile) and complete the round
+        // 1. Complete the round and discard the show card
         const updatedDiscard = [...round.discard_pile, showCard];
         const { error: rErr } = await supabase
           .from("rounds")
@@ -1750,6 +1803,15 @@ export default function RoomPage() {
           .eq("id", round.id);
 
         if (rErr) throw rErr;
+
+        // 2. Mark declarer as winner (AFTER round is completed)
+        const { error: rpErr } = await supabase
+          .from("round_players")
+          .update({ status: "winner" })
+          .eq("round_id", round.id)
+          .eq("player_id", user?.id);
+
+        if (rpErr) throw rpErr;
 
         // 3. Log event
         await supabase.from("game_events").insert({
@@ -1829,16 +1891,21 @@ export default function RoomPage() {
     const currentRound = roundRef.current;
     if (!currentRound) return;
 
+    // Write order matters: complete the round FIRST, then mark winner.
+    // This mirrors the safe write order in handleShowDeclare — other clients
+    // see roundRef.current.status === "completed" before the winner status
+    // fires via realtime, so they route to score calculation instead of
+    // triggering the auto-declare guard again (which would create two winners).
+    await supabase
+      .from("rounds")
+      .update({ status: "completed" })
+      .eq("id", currentRound.id);
+
     await supabase
       .from("round_players")
       .update({ status: "winner" })
       .eq("round_id", currentRound.id)
       .eq("player_id", winnerId);
-
-    await supabase
-      .from("rounds")
-      .update({ status: "completed" })
-      .eq("id", currentRound.id);
 
     await supabase.from("game_events").insert({
       round_id: currentRound.id,
@@ -1885,17 +1952,28 @@ export default function RoomPage() {
           }
         }
 
+        // Track whether the score was already set before this scoring run.
+        // If it was already in the DB (e.g. dropped players with score=20/40),
+        // we must NOT add it to total_score again — that would double-count
+        // if calculateAndSubmitRoundScores somehow runs twice (admin reconnect
+        // between writes while submittedRoundScoresRef was reset).
+        const scoreWasPreSet = rp.score_this_round !== null;
+
         updatedScores.push({
           id: rp.id,
           player_id: rp.player_id,
           score_this_round: score,
+          currentStatus: rp.status,
+          scoreWasPreSet,
         });
 
         // Get room player and add score
         const roomPlayer = playersRef.current.find(p => p.player_id === rp.player_id);
         if (roomPlayer) {
           const wasAlreadyEliminated = roomPlayer.status === "eliminated";
-          const scoreToAdd = wasAlreadyEliminated ? 0 : score;
+          // Only add score to total if it wasn't already counted in a previous run
+          // (scoreWasPreSet = true means dropped players whose score was written at drop time)
+          const scoreToAdd = wasAlreadyEliminated || scoreWasPreSet ? 0 : score;
           const newTotalScore = roomPlayer.total_score + scoreToAdd;
           const isEliminated = wasAlreadyEliminated || newTotalScore >= 250;
 
@@ -1907,14 +1985,29 @@ export default function RoomPage() {
         }
       }
 
-      // Submit round scores and update status
+      // Submit round scores and update status.
+      // IMPORTANT: Always explicitly write the status for the true winner AND
+      // reset any stale "winner"/"shown_valid" status on non-winners.
+      // This prevents the two-winners bug that occurs when the declarer's
+      // "winner" status is set first but a different player turns out to have
+      // the lowest count (e.g., Rangan had count 4 while Godamani declared).
       for (const item of updatedScores) {
         const isWinner = item.player_id === winnerId;
+        // For non-winners who were prematurely marked "winner" or "shown_valid"
+        // (e.g. the person who clicked declare but actually lost), reset their
+        // status back to "active" so only one player shows the trophy.
+        const needsStatusReset =
+          !isWinner &&
+          (item.currentStatus === "winner" || item.currentStatus === "shown_valid");
         await supabase
           .from("round_players")
           .update({
             score_this_round: item.score_this_round,
-            ...(isWinner ? { status: "winner" } : {})
+            ...(isWinner
+              ? { status: "winner" }
+              : needsStatusReset
+              ? { status: "active" }
+              : {}),
           })
           .eq("id", item.id);
       }
@@ -2443,7 +2536,10 @@ export default function RoomPage() {
 
   const getNextPlayerId = (currentTurnPlayerId?: string): string => {
     if (!round) return "";
-    const activeRoundPlayers = roundPlayers.filter(p => p.status === "active");
+    // Include shown_wrong players — they got 80pt penalty but still take turns
+    const activeRoundPlayers = roundPlayers.filter(
+      p => p.status === "active" || p.status === "shown_wrong"
+    );
     if (activeRoundPlayers.length <= 1) return user?.id || "";
 
     const referencePlayerId = currentTurnPlayerId || round.current_turn_player_id || user?.id || "";
