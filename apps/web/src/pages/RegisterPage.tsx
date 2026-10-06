@@ -24,6 +24,12 @@ export default function RegisterPage() {
     setError("");
     setLoading(true);
 
+    if (mobileNumber.trim() && !/^[0-9]{10}$/.test(mobileNumber.trim())) {
+      setError("Please enter a valid 10-digit mobile number, or leave it empty.");
+      setLoading(false);
+      return;
+    }
+
     if (upiId && !upiId.includes("@")) {
       setError("Please enter a valid UPI ID (e.g. name@upi, mobile@ybl)");
       setLoading(false);
@@ -38,7 +44,7 @@ export default function RegisterPage() {
           emailRedirectTo: "https://rummy-family-web.vercel.app/login",
           data: {
             name,
-            mobile_number: mobileNumber,
+            mobile_number: mobileNumber.trim() || null,
             age: parseInt(age, 10),
             sex,
             upi_id: upiId.trim() || null,
@@ -113,15 +119,13 @@ export default function RegisterPage() {
 
               <div>
                 <label className="block text-xs font-semibold text-[var(--color-text-secondary)] mb-1">
-                  Mobile Number
+                  Mobile Number <span className="text-[var(--color-text-muted)] font-normal">(Optional)</span>
                 </label>
                 <input
                   type="tel"
-                  required
-                  pattern="[0-9]{10}"
                   value={mobileNumber}
                   onChange={(e) => setMobileNumber(e.target.value)}
-                  placeholder="10 digit number"
+                  placeholder="10 digits (optional)"
                   className="w-full px-3 py-2 text-sm rounded-xl bg-[var(--color-bg-default)] border border-[var(--color-border-default)] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all"
                 />
               </div>

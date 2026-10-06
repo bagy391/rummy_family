@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { LogOut, Trophy, Plus, LogIn, User, Sparkles, Lock, RefreshCw } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -21,66 +21,154 @@ interface LeaderboardEntry {
   earnings: number;
 }
 
+const DASHBOARD_CACHE_KEY = "rummy_dashboard_cache_";
+
+interface DashboardCachePayload {
+  stats: GameStats;
+  leaderboard: LeaderboardEntry[];
+  history: any[];
+  pendingPayments: any[];
+  activeRooms: any[];
+}
+
+function getDashboardCache(userId: string): DashboardCachePayload | null {
+  try {
+    const raw = localStorage.getItem(`${DASHBOARD_CACHE_KEY}${userId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDashboardCache(userId: string, data: Partial<DashboardCachePayload>) {
+  try {
+    const existing = getDashboardCache(userId) || {
+      stats: { total_games_played: 0, total_wins: 0, earnings: 0, total_points: 0 },
+      leaderboard: [],
+      history: [],
+      pendingPayments: [],
+      activeRooms: [],
+    };
+    const updated = {
+      ...existing,
+      ...data,
+    };
+    localStorage.setItem(`${DASHBOARD_CACHE_KEY}${userId}`, JSON.stringify(updated));
+  } catch {}
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
-  const [stats, setStats] = useState<GameStats>({
+
+  const cachedData = useMemo(() => {
+    const uid = user?.id || useAuthStore.getState().user?.id;
+    return uid ? getDashboardCache(uid) : null;
+  }, [user?.id]);
+
+  const [stats, setStats] = useState<GameStats>(() => cachedData?.stats || {
     total_games_played: 0,
     total_wins: 0,
     earnings: 0,
     total_points: 0,
   });
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>(() => cachedData?.leaderboard || []);
   const [betAmount, setBetAmount] = useState<string>("50");
   const [roomCode, setRoomCode] = useState("");
   const [loadingCreate, setLoadingCreate] = useState(false);
   const [loadingJoin, setLoadingJoin] = useState(false);
-  const [history, setHistory] = useState<any[]>([]);
-  const [pendingPayments, setPendingPayments] = useState<any[]>([]);
-  const [activeRooms, setActiveRooms] = useState<any[]>([]);
+  const [history, setHistory] = useState<any[]>(() => cachedData?.history || []);
+  const [pendingPayments, setPendingPayments] = useState<any[]>(() => cachedData?.pendingPayments || []);
+  const [activeRooms, setActiveRooms] = useState<any[]>(() => cachedData?.activeRooms || []);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const lastFetchedAt = useRef<number>(0);
 
-  const fetchDashboardData = useCallback(async () => {
-    if (!user) return;
-    
+  const fetchDashboardData = useCallback(async (isManual = false) => {
+    const currentUser = user || useAuthStore.getState().user;
+    if (!currentUser?.id) return;
+
+    if (isManual) setIsRefreshing(true);
+
     try {
+      // 0. Ensure Supabase auth session is valid / refreshed before querying database.
+      // After hours of phone sleep / background tab, access token expires (1 hour lifetime).
+      // Explicitly refreshing prevents queries hanging on auth lock or failing with 401.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || (session.expires_at && session.expires_at * 1000 < Date.now() + 60000)) {
+          await supabase.auth.refreshSession().catch(() => {});
+        }
+      } catch {}
+
       // 1. Get stats
       const { data: statsData } = await supabase
         .from("game_stats")
         .select("total_games_played, total_wins, earnings, total_points")
-        .eq("player_id", user.id)
+        .eq("player_id", currentUser.id)
         .maybeSingle();
-        
+
       if (statsData) {
         setStats(statsData);
       }
 
       // 2. Get leaderboard from profiles and stats
-      const { data: leaderboardData } = await supabase
+      const { data: leaderboardData, error: lbError } = await supabase
         .from("game_stats")
         .select("total_wins, earnings, player_id, profiles(name, avatar_url)")
         .order("earnings", { ascending: false })
         .limit(10);
 
-      if (leaderboardData) {
-        const hostname = window.location.hostname;
-        const isLocalDev =
-          hostname === "localhost" ||
-          hostname === "127.0.0.1" ||
-          hostname.startsWith("192.168.") ||
-          hostname.startsWith("10.") ||
-          hostname.startsWith("172.");
+      if (lbError) {
+        console.warn("Leaderboard fetch error:", lbError);
+      }
 
-        const mapped = leaderboardData
+      let mappedLeaderboard: LeaderboardEntry[] | undefined;
+      const hostname = window.location.hostname;
+      const isLocalDev =
+        import.meta.env.DEV ||
+        hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "[::1]" ||
+        hostname.endsWith(".local") ||
+        hostname.endsWith(".test") ||
+        hostname.includes("ngrok") ||
+        hostname.includes("trycloudflare.com") ||
+        hostname.includes("loca.lt") ||
+        hostname.startsWith("192.168.") ||
+        hostname.startsWith("10.") ||
+        hostname.startsWith("172.");
+
+      if (leaderboardData && leaderboardData.length > 0) {
+        mappedLeaderboard = leaderboardData
           .map((x: any) => ({
             player_id: x.player_id,
             name: decodeCleanUTF8(x.profiles?.name || "Player"),
             avatar_url: x.profiles?.avatar_url || null,
-            total_wins: x.total_wins,
+            total_wins: x.total_wins || 0,
             earnings: parseFloat(x.earnings) || 0,
           }))
+          // In local dev, NEVER filter out test accounts so you can test freely
           .filter((p: any) => isLocalDev || !p.name.toLowerCase().includes("test"));
-        setLeaderboard(mapped);
+        setLeaderboard(mappedLeaderboard);
+      } else {
+        // Fallback: If no game_stats rows exist yet, show registered profiles
+        const { data: profilesData } = await supabase
+          .from("profiles")
+          .select("id, name, avatar_url")
+          .limit(10);
+
+        if (profilesData && profilesData.length > 0) {
+          mappedLeaderboard = profilesData
+            .map((p: any) => ({
+              player_id: p.id,
+              name: decodeCleanUTF8(p.name || "Player"),
+              avatar_url: p.avatar_url || null,
+              total_wins: 0,
+              earnings: 0,
+            }))
+            .filter((p: any) => isLocalDev || !p.name.toLowerCase().includes("test"));
+          setLeaderboard(mappedLeaderboard);
+        }
       }
 
       // 3. Get game history
@@ -97,11 +185,13 @@ export default function DashboardPage() {
             created_at
           )
         `)
-        .eq("player_id", user.id)
+        .eq("player_id", currentUser.id)
         .order("joined_at", { ascending: false });
 
+      let activeList: any[] | undefined;
+      let finishedList: any[] | undefined;
       if (rpData) {
-        const active = rpData
+        activeList = rpData
           .filter((x: any) => x.rooms?.status === "active" || x.rooms?.status === "waiting")
           .map((x: any) => ({
             roomId: x.rooms.id,
@@ -111,9 +201,9 @@ export default function DashboardPage() {
             playerStatus: x.status,
             roomStatus: x.rooms.status,
           }));
-        setActiveRooms(active);
+        setActiveRooms(activeList);
 
-        const finished = rpData
+        finishedList = rpData
           .filter((x: any) => x.rooms?.status === "finished")
           .map((x: any) => ({
             roomId: x.rooms.id,
@@ -123,7 +213,7 @@ export default function DashboardPage() {
             totalScore: x.total_score,
             playerStatus: x.status,
           }));
-        setHistory(finished);
+        setHistory(finishedList);
       }
 
       // 4. Get payments involving user
@@ -140,10 +230,11 @@ export default function DashboardPage() {
           payer:profiles!payer_id ( name ),
           payee:profiles!payee_id ( name, upi_id )
         `)
-        .or(`payer_id.eq.${user.id},payee_id.eq.${user.id}`);
+        .or(`payer_id.eq.${currentUser.id},payee_id.eq.${currentUser.id}`);
 
+      let mappedPayments: any[] | undefined;
       if (paymentsData) {
-        const mappedPayments = paymentsData.map((p: any) => ({
+        mappedPayments = paymentsData.map((p: any) => ({
           id: p.id,
           roomId: p.room_id,
           roomCode: p.rooms?.room_code || "Unknown",
@@ -157,48 +248,80 @@ export default function DashboardPage() {
         }));
         setPendingPayments(mappedPayments);
       }
+
+      // 5. Persist to cache so dashboard never opens empty on next cold start
+      saveDashboardCache(currentUser.id, {
+        stats: statsData || undefined,
+        leaderboard: mappedLeaderboard,
+        history: finishedList,
+        activeRooms: activeList,
+        pendingPayments: mappedPayments,
+      });
     } catch (err) {
       console.error("Dashboard fetching failed:", err);
     } finally {
       lastFetchedAt.current = Date.now();
+      setIsRefreshing(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [user]);
 
-  // Fetch on mount / whenever the authenticated user changes (use stable user.id primitive)
+  // Fetch on mount and when user identity changes
   useEffect(() => {
-    if (!user?.id) return;
+    const uid = user?.id || useAuthStore.getState().user?.id;
+    if (!uid) return;
+
+    // Hydrate from cache immediately if state is empty
+    const cached = getDashboardCache(uid);
+    if (cached) {
+      if (cached.stats) setStats(cached.stats);
+      if (cached.leaderboard?.length) setLeaderboard(cached.leaderboard);
+      if (cached.history?.length) setHistory(cached.history);
+      if (cached.activeRooms?.length) setActiveRooms(cached.activeRooms);
+      if (cached.pendingPayments?.length) setPendingPayments(cached.pendingPayments);
+    }
+
     fetchDashboardData();
   }, [user?.id, fetchDashboardData]);
 
-  // Refetch when tab becomes visible again after being hidden (handles long idle / background tab)
+  // Re-fetch when tab becomes visible, window gains focus, device reconnects online, or page restores from BFCache
   useEffect(() => {
-    const STALE_THRESHOLD_MS = 60 * 1000; // 60 seconds
+    const STALE_THRESHOLD_MS = 30 * 1000; // 30 seconds
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && user?.id) {
-        const elapsed = Date.now() - lastFetchedAt.current;
-        if (elapsed > STALE_THRESHOLD_MS) {
-          fetchDashboardData();
-        }
+    const handleTrigger = () => {
+      const uid = user?.id || useAuthStore.getState().user?.id;
+      if (!uid) return;
+      const elapsed = Date.now() - lastFetchedAt.current;
+      if (elapsed > STALE_THRESHOLD_MS) {
+        fetchDashboardData();
       }
     };
 
-    const handleWindowFocus = () => {
-      if (user?.id) {
-        const elapsed = Date.now() - lastFetchedAt.current;
-        if (elapsed > STALE_THRESHOLD_MS) {
-          fetchDashboardData();
-        }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        handleTrigger();
+      }
+    };
+
+    const handleOnline = () => {
+      fetchDashboardData();
+    };
+
+    const handlePageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) {
+        fetchDashboardData();
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("focus", handleTrigger);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("pageshow", handlePageShow);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("focus", handleTrigger);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("pageshow", handlePageShow);
     };
   }, [user?.id, fetchDashboardData]);
 
@@ -503,7 +626,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-dvh bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] safe-top safe-bottom p-4">
+    <div className="min-h-dvh bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] safe-top safe-bottom p-4 pb-16">
       {/* Navbar */}
       <header className="flex justify-between items-center py-4 mb-6 border-b border-[var(--color-border-default)]">
         <div className="flex items-center gap-2">
@@ -517,11 +640,16 @@ export default function DashboardPage() {
             <span>{user?.displayName}</span>
           </div>
           <button
-            onClick={handleHardRefresh}
-            className="p-2 rounded-full hover:bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] hover:text-emerald-400 transition-colors"
-            title="Hard Refresh App"
+            onClick={() => {
+              fetchDashboardData(true);
+              toast.info("Refreshing dashboard data...");
+            }}
+            onDoubleClick={handleHardRefresh}
+            disabled={isRefreshing}
+            className="p-2 rounded-full hover:bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors cursor-pointer"
+            title="Click to refresh data, double click to hard refresh"
           >
-            <RefreshCw className="w-5 h-5" />
+            <RefreshCw className={`w-5 h-5 ${isRefreshing ? "animate-spin text-emerald-400" : ""}`} />
           </button>
           <button 
             onClick={handleLogout}

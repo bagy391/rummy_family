@@ -134,7 +134,6 @@ export default function GameScreen({
   voiceContent,
 }: GameScreenProps) {
 
-
   const opponents = players.filter(
     (p) => p.player_id !== userId || isSpectator
   );
@@ -152,13 +151,21 @@ export default function GameScreen({
     onReorderHand(sorted);
   };
 
-  const canDrop = isMyTurn && !hasDrawnThisTurn;
+  const canDrop = isMyTurn && !hasDrawnThisTurn && !isSpectator;
   const showFirstDrop = canDrop && turnOrderIndex < roundPlayers.length && (myTotalScore + 20) < 250;
   const showSecondDrop = canDrop && turnOrderIndex >= roundPlayers.length && (myTotalScore + 40) < 250;
 
   return (
-    <div className="flex-1 flex flex-col relative overflow-hidden felt-texture h-full w-full">
-      {/* Zone 1: Opponent Zone */}
+    /* Full-screen landscape table layout */
+    <div className="flex-1 flex flex-col relative overflow-hidden felt-table h-full w-full select-none">
+      {/* Subtle inner vignette */}
+      <div className="absolute inset-0 pointer-events-none z-0"
+        style={{
+          background: 'radial-gradient(ellipse 90% 80% at 50% 50%, transparent 40%, rgba(0,0,0,0.35) 100%)'
+        }}
+      />
+
+      {/* Zone 1: Opponents at top */}
       <OpponentZone
         opponents={opponents}
         roundPlayers={roundPlayers}
@@ -171,7 +178,7 @@ export default function GameScreen({
         onAdminKick={onAdminKick}
       />
 
-      {/* Zone 2: Table Center containing Sets, Hand cards, and Sidebar controls */}
+      {/* Zone 2: Table center (decks + player hand + controls) */}
       <TableCenter
         discardPile={discardPile}
         isMyTurn={isMyTurn}
@@ -208,34 +215,31 @@ export default function GameScreen({
         voiceContent={voiceContent}
       />
 
-      {/* Chat FAB */}
+      {/* Chat FAB (Bottom-Right corner beside player hand) */}
       <button
         onClick={onOpenChat}
-        className="fixed bottom-[calc(env(safe-area-inset-bottom)+2rem)] left-4 sm:left-auto sm:right-6 z-50 w-12 h-12 rounded-full bg-[var(--color-gold)] text-black flex items-center justify-center shadow-lg shadow-[var(--color-gold)]/30 hover:brightness-110 transition-all"
+        id="chat-fab-btn"
+        className="fixed bottom-2.5 right-2.5 sm:bottom-3 sm:right-3 z-50 w-10 h-10 sm:w-11 sm:h-11 rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-110 active:scale-95 cursor-pointer border border-amber-300/40"
+        style={{
+          background: 'linear-gradient(135deg, #d4901a, #F5A623)',
+          boxShadow: '0 4px 18px rgba(245,166,35,0.45)',
+        }}
         title="Open Chat"
       >
-        <svg
-          className="w-5 h-5"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2.5}
+        <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
             d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
           />
         </svg>
         {unreadCount > 0 && (
-          <span className="absolute -top-1 -right-1 bg-red-500 text-[10px] text-white font-bold w-5 h-5 rounded-full flex items-center justify-center animate-bounce">
-            {unreadCount}
+          <span className="absolute -top-1 -right-1 bg-red-500 text-[10px] text-white font-bold w-4 h-4 rounded-full flex items-center justify-center animate-bounce shadow-md">
+            {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
       </button>
 
       {/* Floating emojis for self */}
-      <div className="fixed bottom-36 left-1/2 -translate-x-1/2 pointer-events-none z-50 flex flex-col items-center">
+      <div className="fixed bottom-40 left-1/2 -translate-x-1/2 pointer-events-none z-50 flex flex-col items-center">
         <AnimatePresence>
           {floatingEmojis
             .filter((e) => e.senderId === userId)
@@ -245,17 +249,16 @@ export default function GameScreen({
                 initial={{ opacity: 0, y: 10, scale: 0.5 }}
                 animate={{
                   opacity: [0, 1, 1, 0],
-                  y: [10, -15, -35, -55],
-                  scale: [0.5, 1.5, 1.5, 1.0],
+                  y: [10, -20, -40, -60],
+                  scale: [0.5, 1.6, 1.6, 1.0],
                 }}
-                shadow-md
                 exit={{ opacity: 0 }}
                 transition={{
-                  duration: 2.0,
+                  duration: 2.2,
                   times: [0, 0.15, 0.8, 1],
                   ease: "easeOut",
                 }}
-                className="text-3xl filter drop-shadow-[0_4px_6px_rgba(0,0,0,0.5)]"
+                className="text-3xl filter drop-shadow-[0_4px_8px_rgba(0,0,0,0.6)]"
               >
                 {fe.emoji}
               </motion.div>

@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Trophy, ArrowLeft, Copy, Check, Info, Smartphone, Share2
+  Trophy, ArrowLeft, Copy, Check, Info, Smartphone, Share2, Sparkles, ShieldCheck, AlertTriangle, X, Eye
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
@@ -11,7 +11,7 @@ import { gameAudio } from "@/lib/audio";
 import {
   Rank,
   createShuffledDeck, dealCards, selectWildJokerCard, resolveWildJoker,
-  validateShow, findOptimalGrouping,
+  validateShow, findOptimalGrouping, isWildJoker,
   isPureSequence, isImpureSequence, isValidSet, isLondon
 } from "@rummy/shared";
 import type { Card, WildJokerInfo } from "@rummy/shared";
@@ -21,6 +21,7 @@ import PlayingCard from "@/components/game/PlayingCard";
 import { decodeCleanUTF8 } from "@/lib/utils";
 import { useVoiceChat, uidFromUserId } from "@/lib/useVoiceChat";
 import VoicePanel from "@/components/game/VoicePanel";
+import { lockToLandscape, unlockOrientation, useOrientation } from "@/lib/orientation";
 
 
 interface Room {
@@ -119,7 +120,6 @@ export default function RoomPage() {
   }, [players]);
 
   const [channelStatus, setChannelStatus] = useState<string>("CONNECTING");
-  const [hasSubscribed, setHasSubscribed] = useState(false);
   const [isBrowserOnline, setIsBrowserOnline] = useState(navigator.onLine);
   const lastSeenMap = useRef<Record<string, number>>({});
   const presenceOnlineIdsRef = useRef<string[]>([]);
@@ -144,6 +144,40 @@ export default function RoomPage() {
     };
   }, []);
 
+  // Dynamic orientation tracking for mobile and installed PWA
+  const { isPortrait, isPWA: isRunningPWA, isMobile: isMobileClient } = useOrientation();
+
+  // Active game lifecycle (from round 1 start through match settlements)
+  const isGameRunning = room?.status === "active" || room?.status === "finished";
+
+  useEffect(() => {
+    if (isGameRunning) {
+      lockToLandscape().catch(() => {});
+    } else {
+      unlockOrientation().catch(() => {});
+    }
+
+    const handleVisibility = () => {
+      if (!document.hidden && isGameRunning) {
+        lockToLandscape().catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    const handleUserGesture = () => {
+      if (isGameRunning) {
+        lockToLandscape().catch(() => {});
+      }
+    };
+    window.addEventListener("pointerdown", handleUserGesture);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pointerdown", handleUserGesture);
+      unlockOrientation().catch(() => {});
+    };
+  }, [isGameRunning]);
+
   const [round, setRound] = useState<Round | null>(null);
   const roundRef = useRef<Round | null>(null);
   useEffect(() => {
@@ -154,6 +188,10 @@ export default function RoomPage() {
   const isSubmittingScoresRef = useRef<boolean>(false);
 
   const [roundPlayers, setRoundPlayers] = useState<RoundPlayer[]>([]);
+  const roundPlayersRef = useRef<RoundPlayer[]>([]);
+  useEffect(() => {
+    roundPlayersRef.current = roundPlayers;
+  }, [roundPlayers]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [scoreHistory, setScoreHistory] = useState<any[]>([]);
   const [onlinePlayerIds, setOnlinePlayerIds] = useState<string[]>([]);
@@ -170,6 +208,22 @@ export default function RoomPage() {
   const [copied, setCopied] = useState(false);
   const [nowTime, setNowTime] = useState(new Date().getTime());
   const [showCardToConfirm, setShowCardToConfirm] = useState<Card | null>(null);
+
+  // Memoised show-confirmation metadata — avoids running findValidShowGroups on every render while modal is open
+  const showConfirmMeta = useMemo(() => {
+    if (!showCardToConfirm) return { wildRank: undefined, localResult: { isValid: false, errors: [], unmatchedPoints: 80 }, isWildFinishCard: false };
+    const jokerInfo = round?.wild_joker;
+    const wildRank = jokerInfo
+      ? (jokerInfo.wildRank !== undefined ? jokerInfo.wildRank : ((jokerInfo as any).rank === Rank.PRINTED_JOKER ? Rank.ACE : (jokerInfo as any).rank))
+      : undefined;
+    const remainingCards = myHand.filter((c) => c.id !== showCardToConfirm.id);
+    const validGroups = wildRank !== undefined ? findValidShowGroups(remainingCards, wildRank) : null;
+    const localResult = (validGroups && wildRank !== undefined)
+      ? validateShow(validGroups, wildRank)
+      : { isValid: false, errors: ["No valid melds found. You must have at least 1 pure sequence and 1 other sequence."], unmatchedPoints: 80 };
+    const isWildFinishCard = wildRank !== undefined && isWildJoker(showCardToConfirm, wildRank);
+    return { wildRank, localResult, isWildFinishCard };
+  }, [showCardToConfirm, myHand, round?.wild_joker]);
 
   // Chat & Reaction state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -285,7 +339,6 @@ export default function RoomPage() {
   const me = players.find(p => p.player_id === user?.id);
   const myRoundState = roundPlayers.find(p => p.player_id === user?.id);
   const isAdmin = me?.is_admin || false;
-  const isMyTurn = round?.current_turn_player_id === user?.id && round?.status === "active";
 
   // Build uid→name map for voice chat participant labelling
   const uidToName: Record<number, string> = {};
@@ -306,15 +359,20 @@ export default function RoomPage() {
       voice.leave();
     }
   }, [isVoiceChatEnabled, voice.isInVoice]);
-
   const isDropped = myRoundState?.status === "dropped_first" || myRoundState?.status === "dropped_second";
 
   const isSpectator: boolean =
     me?.status === "spectating" ||
     me?.status === "eliminated" ||
     (room?.status === "active" && round && round.status === "active" && me?.status !== "active" && !myRoundState) ||
-    (round?.status === "active" && isDropped) ||  // only during active round
+    (round?.status === "active" && (isDropped || myRoundState?.status === "shown_wrong")) ||  // only during active round
     false;
+
+  const isMyTurn =
+    !isSpectator &&
+    myRoundState?.status === "active" &&
+    round?.current_turn_player_id === user?.id &&
+    round?.status === "active";
 
   // Track turn changes to trigger intense beep and vibration pattern
   const prevIsMyTurnRef = useRef(false);
@@ -326,6 +384,34 @@ export default function RoomPage() {
     }
     prevIsMyTurnRef.current = isNowMyTurn;
   }, [isMyTurn, round?.status]);
+
+  const [dismissedPostRoundForSettlement, setDismissedPostRoundForSettlement] = useState(false);
+
+  // Active surviving players in the room
+  const activeRemainingPlayers = useMemo(() => {
+    return players.filter(
+      (p) => p.status === "active" || p.status === "disconnected"
+    );
+  }, [players]);
+
+  // Match has completed either by room.status or by last survivor standing
+  const isMatchOver =
+    room?.status === "finished" ||
+    (players.length > 1 && activeRemainingPlayers.length <= 1);
+
+  // Reset modal dismissal when a new round starts
+  useEffect(() => {
+    if (round?.status === "active") {
+      setDismissedPostRoundForSettlement(false);
+    }
+  }, [round?.id, round?.status]);
+
+  // Automatically fetch payments whenever the match completes
+  useEffect(() => {
+    if (isMatchOver && room?.id) {
+      fetchPayments(room.id);
+    }
+  }, [isMatchOver, room?.id]);
 
   // 1. Initial Load & Subscriptions
   useEffect(() => {
@@ -431,6 +517,7 @@ export default function RoomPage() {
         // Fetch payments if finished
         if (roomData.status === "finished") {
           await fetchPayments(roomData.id);
+          setDismissedPostRoundForSettlement(true);
         }
         if (!active) return;
 
@@ -667,16 +754,18 @@ export default function RoomPage() {
     };
   }, [roomCode, user]);
 
-  // Redirect player to dashboard if they are kicked from the lobby
+  // Redirect player to dashboard if they are kicked from the lobby (only after initial join confirmed)
+  const hasInitiallyJoinedRef = useRef(false);
   useEffect(() => {
-    if (room && room.status === "waiting" && players.length > 0) {
-      const isStillInRoom = players.some(p => p.player_id === user?.id);
-      if (!isStillInRoom) {
-        toast.error("You have been removed from the lobby");
-        window.location.href = "/dashboard";
-      }
+    if (!user?.id || !room || room.status !== "waiting" || players.length === 0) return;
+    const isStillInRoom = players.some(p => p.player_id === user.id);
+    if (isStillInRoom) {
+      hasInitiallyJoinedRef.current = true;
+    } else if (hasInitiallyJoinedRef.current) {
+      toast.error("You have been removed from the lobby");
+      window.location.href = "/dashboard";
     }
-  }, [players, room, user]);
+  }, [players, room, user?.id]);
 
   // Handle round state subscriptions once active round is known
   useEffect(() => {
@@ -780,7 +869,6 @@ export default function RoomPage() {
 
       // Reset subscription status trackers for the new room/connection
       setChannelStatus("CONNECTING");
-      setHasSubscribed(false);
 
       channel = supabase.channel(presenceChannelName, {
         config: {
@@ -828,9 +916,6 @@ export default function RoomPage() {
         .subscribe(async (status: string) => {
           if (active) {
             setChannelStatus(status);
-            if (status === "SUBSCRIBED") {
-              setHasSubscribed(true);
-            }
           }
           if (status === "SUBSCRIBED" && active) {
             await channel.track({
@@ -985,8 +1070,10 @@ export default function RoomPage() {
           }
           const currentMe = playersRef.current.find(p => p.player_id === user?.id);
           const amIAdmin = currentMe?.is_admin || false;
+          const onlinePlayers = playersRef.current.filter(p => onlinePlayerIdsRef.current.includes(p.player_id));
+          const amIPrimary = onlinePlayers[0]?.player_id === user?.id;
 
-          if (winner && roundRef.current && amIAdmin) {
+          if (winner && roundRef.current && (amIAdmin || amIPrimary)) {
             calculateAndSubmitRoundScores(roundRef.current, data, winner.player_id);
           }
         }
@@ -1018,36 +1105,21 @@ export default function RoomPage() {
         setRoundPlayers(merged);
 
         // Auto-declare winner if only 1 active player remains.
-        // IMPORTANT: skip if any player already has status "winner" or "shown_valid" —
-        // that means someone just clicked Declare and their round_players update
-        // fired before the round.status="completed" update arrived. Without this guard,
-        // when a 3rd player is dropped (reducing active count to 2) and then the
-        // declarer's status flips to "winner" (reducing active count to 1), this
-        // block would wrongly call declareRoundWinner on the only remaining active
-        // player — creating two winners.
-        //
-        // Also count "shown_wrong" players as still in-game: a wrong-show gives 80pt
-        // penalty but the player stays in the round. Without this, after a wrong show
-        // in a game with only 2 playing (one already dropped), the remaining "active"
-        // player would be wrongly auto-declared winner mid-round.
         if (currentStatus === "active") {
           const alreadyHasWinner = merged.some(
             (p) => p.status === "winner" || p.status === "shown_valid"
           );
-          // Players still participating in the round (active OR wrong-show penalty)
-          const stillInRound = merged.filter(
-            (p) => p.status === "active" || p.status === "shown_wrong"
-          );
-          if (!alreadyHasWinner && stillInRound.length === 1 && stillInRound[0]?.status === "active") {
-            const winnerId = stillInRound[0].player_id;
-            // Only one client should call declareRoundWinner to avoid duplicate
-            // ROUND_ENDED game_events. Prefer admin; winner calls it only if no
-            // admin client is present (i.e., winner IS the admin, or no admin exists).
+          // Only active players participate in the round (dropped & wrong show are out)
+          const activePlayers = merged.filter((p) => p.status === "active");
+          if (!alreadyHasWinner && activePlayers.length === 1 && activePlayers[0]) {
+            const winnerId = activePlayers[0].player_id;
             const currentMe = playersRef.current.find(p => p.player_id === user?.id);
             const amIAdmin = currentMe?.is_admin || false;
             const amIWinner = winnerId === user?.id;
+            const onlinePlayers = playersRef.current.filter(p => onlinePlayerIdsRef.current.includes(p.player_id));
+            const amIPrimary = onlinePlayers[0]?.player_id === user?.id;
 
-            if (amIAdmin || (!amIAdmin && amIWinner)) {
+            if (amIAdmin || amIWinner || amIPrimary) {
               declareRoundWinner(winnerId);
             }
           }
@@ -1070,7 +1142,7 @@ export default function RoomPage() {
 
       const { data: rpData, error: rpErr } = await supabase
         .from("round_players")
-        .select("round_id, player_id, score_this_round")
+        .select("round_id, player_id, score_this_round, status")
         .in("round_id", roundIds);
 
       if (rpErr || !rpData) return;
@@ -1106,7 +1178,16 @@ export default function RoomPage() {
           roundDataMap[roundNum] = {};
         }
 
-        const score = rp.score_this_round || 0;
+        let score = rp.score_this_round;
+        if (score === null || score === undefined) {
+          score = rp.status === "winner" || rp.status === "shown_valid"
+            ? 0
+            : rp.status === "dropped_first"
+            ? 20
+            : rp.status === "dropped_second"
+            ? 40
+            : 80;
+        }
         const currentTotal = playerTotals[rp.player_id] ?? 0;
         const newTotal = currentTotal + score;
         playerTotals[rp.player_id] = newTotal;
@@ -1323,7 +1404,7 @@ export default function RoomPage() {
         if (action === "ELIMINATE") {
           const { error: rpErr } = await supabase
             .from("room_players")
-            .update({ status: "eliminated" })
+            .update({ status: "eliminated", total_score: 250 })
             .eq("room_id", room.id)
             .eq("player_id", targetPlayerId);
 
@@ -1332,15 +1413,17 @@ export default function RoomPage() {
           if (round && round.status === "active") {
             await supabase
               .from("round_players")
-              .update({ status: "dropped_second", score_this_round: 0 })
+              .update({ status: "dropped_second", score_this_round: 80 })
               .eq("round_id", round.id)
               .eq("player_id", targetPlayerId);
 
-            // Include shown_wrong players — they still participate in turns
-            const remainingActive = roundPlayers.filter(
-              p => p.player_id !== targetPlayerId && (p.status === "active" || p.status === "shown_wrong")
+            const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+            const remainingActive = currentRPs.filter(
+              p => p.player_id !== targetPlayerId && p.status === "active"
             );
-            if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
+            if (remainingActive.length === 1 && remainingActive[0]) {
+              await declareRoundWinner(remainingActive[0].player_id);
+            } else if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
               const nextPlayerId = getNextPlayerId(targetPlayerId);
               await supabase
                 .from("rounds")
@@ -1349,28 +1432,13 @@ export default function RoomPage() {
                   turn_order_index: round.turn_order_index + 1,
                 })
                 .eq("id", round.id);
-            } else if (remainingActive.length === 1 && remainingActive[0]?.status === "active") {
-              // Only 1 active player left after elimination — complete the round
-              await supabase
-                .from("rounds")
-                .update({ status: "completed", current_turn_player_id: null })
-                .eq("id", round.id);
-
-              const winnerId = remainingActive[0].player_id;
-              await supabase.from("game_events").insert({
-                round_id: round.id,
-                room_id: room?.id,
-                player_id: winnerId,
-                sequence_number: round.turn_order_index + 1,
-                event_type: "ROUND_ENDED",
-                event_data: { winnerId, reason: "Last player remaining after admin eliminate" },
-              });
             }
           }
           toast.success("Player eliminated from game");
         } else {
           if (round && round.status === "active") {
-            const rp = roundPlayers.find(p => p.player_id === targetPlayerId);
+            const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+            const rp = currentRPs.find(p => p.player_id === targetPlayerId);
             const score = rp?.has_drawn_this_turn ? 40 : 20;
             const dbStatus = rp?.has_drawn_this_turn ? "dropped_second" : "dropped_first";
 
@@ -1380,11 +1448,12 @@ export default function RoomPage() {
               .eq("round_id", round.id)
               .eq("player_id", targetPlayerId);
 
-            // Include shown_wrong players — they still participate in turns
-            const remainingActive = roundPlayers.filter(
-              p => p.player_id !== targetPlayerId && (p.status === "active" || p.status === "shown_wrong")
+            const remainingActive = currentRPs.filter(
+              p => p.player_id !== targetPlayerId && p.status === "active"
             );
-            if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
+            if (remainingActive.length === 1 && remainingActive[0]) {
+              await declareRoundWinner(remainingActive[0].player_id);
+            } else if (remainingActive.length > 1 && round.current_turn_player_id === targetPlayerId) {
               const nextPlayerId = getNextPlayerId(targetPlayerId);
               await supabase
                 .from("rounds")
@@ -1393,22 +1462,6 @@ export default function RoomPage() {
                   turn_order_index: round.turn_order_index + 1,
                 })
                 .eq("id", round.id);
-            } else if (remainingActive.length === 1 && remainingActive[0]) {
-              // Only 1 player left — complete the round immediately
-              await supabase
-                .from("rounds")
-                .update({ status: "completed", current_turn_player_id: null })
-                .eq("id", round.id);
-
-              const winnerId = remainingActive[0].player_id;
-              await supabase.from("game_events").insert({
-                round_id: round.id,
-                room_id: room?.id,
-                player_id: winnerId,
-                sequence_number: round.turn_order_index + 1,
-                event_type: "ROUND_ENDED",
-                event_data: { winnerId, reason: "Last player remaining after admin drop" },
-              });
             }
           }
           toast.success("Player dropped for current round");
@@ -1442,11 +1495,14 @@ export default function RoomPage() {
         .eq("round_id", currentRound.id)
         .eq("player_id", targetPlayerId);
 
-      const remainingActive = roundPlayers.filter(
+      const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+      const remainingActive = currentRPs.filter(
         p => p.player_id !== targetPlayerId && p.status === "active"
       );
 
-      if (remainingActive.length > 1 && currentRound.current_turn_player_id === targetPlayerId) {
+      if (remainingActive.length === 1 && remainingActive[0]) {
+        await declareRoundWinner(remainingActive[0].player_id);
+      } else if (remainingActive.length > 1 && currentRound.current_turn_player_id === targetPlayerId) {
         await supabase
           .from("rounds")
           .update({
@@ -1454,24 +1510,6 @@ export default function RoomPage() {
             turn_order_index: currentRound.turn_order_index + 1,
           })
           .eq("id", currentRound.id);
-      } else if (remainingActive.length === 1 && remainingActive[0]) {
-        await supabase
-          .from("rounds")
-          .update({
-            status: "completed",
-            current_turn_player_id: null
-          })
-          .eq("id", currentRound.id);
-
-        const winnerId = remainingActive[0].player_id;
-        await supabase.from("game_events").insert({
-          round_id: currentRound.id,
-          room_id: room?.id,
-          player_id: winnerId,
-          sequence_number: currentRound.turn_order_index + 1,
-          event_type: "ROUND_ENDED",
-          event_data: { winnerId, reason: "Last player remaining after auto-drop" },
-        });
       }
 
       toast.success(`Player auto-dropped due to timeout.`);
@@ -1491,6 +1529,9 @@ export default function RoomPage() {
     setLoadingAction(true);
 
     try {
+      // Attempt device landscape lock immediately on user click gesture
+      await lockToLandscape().catch(() => {});
+
       // 1. Update room status to in_progress
       const { error: roomErr } = await supabase
         .from("rooms")
@@ -1621,7 +1662,7 @@ export default function RoomPage() {
 
   // 3. Card Action Handlers
   const handleDrawCard = async () => {
-    if (!round || !isMyTurn || myRoundState?.has_drawn_this_turn) return;
+    if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active" || myRoundState?.has_drawn_this_turn) return;
     setLoadingAction(true);
 
     try {
@@ -1642,7 +1683,7 @@ export default function RoomPage() {
   };
 
   const handlePickDiscard = async () => {
-    if (!round || !isMyTurn || myRoundState?.has_drawn_this_turn) return;
+    if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active" || myRoundState?.has_drawn_this_turn) return;
     setLoadingAction(true);
 
     try {
@@ -1663,7 +1704,33 @@ export default function RoomPage() {
   };
 
   const handleDiscardCard = async (card: Card) => {
-    if (!round || !isMyTurn || !myRoundState?.has_drawn_this_turn) return;
+    if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active" || !myRoundState?.has_drawn_this_turn) return;
+
+    // 1. Snapshot previous state for rollback on failure
+    const prevHand = [...myHand];
+    const prevRound = { ...round };
+    const prevRoundPlayers = [...roundPlayers];
+
+    // 2. Optimistic instant local updates
+    setMyHand((prev) => prev.filter((c) => c.id !== card.id));
+    setSelectedCards([]);
+    setRound((r) =>
+      r ? { ...r, discard_pile: [...(r.discard_pile || []), card] } : r
+    );
+    setRoundPlayers((prev) =>
+      prev.map((rp) =>
+        rp.player_id === user?.id
+          ? {
+            ...rp,
+            has_drawn_this_turn: false,
+            hand: (rp.hand || []).filter((c) => c.id !== card.id),
+          }
+          : rp
+      )
+    );
+
+    gameAudio.playDiscard();
+    gameAudio.triggerHapticDiscard();
     setLoadingAction(true);
 
     // Calculate next active player id
@@ -1678,19 +1745,20 @@ export default function RoomPage() {
       });
 
       if (error) throw error;
-      gameAudio.playDiscard();
-      gameAudio.triggerHapticDiscard();
-      setSelectedCards([]);
       toast.success("Card discarded");
     } catch (err: any) {
-      toast.error(err.message || "Discard failed");
+      // Rollback on failure
+      setMyHand(prevHand);
+      setRound(prevRound);
+      setRoundPlayers(prevRoundPlayers);
+      toast.error(err.message || "Discard failed. Card returned to hand.");
     } finally {
       setLoadingAction(false);
     }
   };
 
   const handleDrop = async (dropType: "FIRST" | "SECOND") => {
-    if (!round || !isMyTurn) return;
+    if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active") return;
     setLoadingAction(true);
 
     const score = dropType === "FIRST" ? 20 : 40;
@@ -1701,7 +1769,6 @@ export default function RoomPage() {
     }
 
     const dbStatus = dropType === "FIRST" ? "dropped_first" : "dropped_second";
-    const nextPlayerId = getNextPlayerId();
 
     try {
       // 1. Update own status and score
@@ -1726,12 +1793,17 @@ export default function RoomPage() {
       });
 
       // 3. Check if only 1 active player remains in this round
-      const remainingActive = roundPlayers.filter(
+      const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+      const remainingActive = currentRPs.filter(
         p => p.player_id !== user?.id && p.status === "active"
       );
 
-      if (remainingActive.length > 1) {
-        // Pass turn to next player
+      if (remainingActive.length === 1 && remainingActive[0]) {
+        // Complete the round immediately as only 1 player remains
+        await declareRoundWinner(remainingActive[0].player_id);
+      } else if (remainingActive.length > 1) {
+        // Pass turn to next active player
+        const nextPlayerId = getNextPlayerId(user?.id);
         await supabase
           .from("rounds")
           .update({
@@ -1739,26 +1811,6 @@ export default function RoomPage() {
             turn_order_index: round.turn_order_index + 1,
           })
           .eq("id", round.id);
-      } else if (remainingActive.length === 1 && remainingActive[0]) {
-        // Complete the round immediately as only 1 player remains
-        await supabase
-          .from("rounds")
-          .update({
-            status: "completed",
-            current_turn_player_id: null
-          })
-          .eq("id", round.id);
-
-        // Log ROUND_ENDED event
-        const winnerId = remainingActive[0].player_id;
-        await supabase.from("game_events").insert({
-          round_id: round.id,
-          room_id: room?.id,
-          player_id: winnerId,
-          sequence_number: round.turn_order_index + 1,
-          event_type: "ROUND_ENDED",
-          event_data: { winnerId, reason: "Last player remaining after drop" },
-        });
       }
 
       toast.success(`Dropped out of round (${score} points)`);
@@ -1827,9 +1879,7 @@ export default function RoomPage() {
         gameAudio.triggerHapticWinner();
         toast.success("VALID SHOW! You won the round!");
       } else {
-        // Wrong Show: 80 points penalty. The round continues.
-        const nextPlayerId = getNextPlayerId();
-
+        // Wrong Show: 80 points penalty. The round continues if >= 2 active players remain.
         // 1. Update player status
         const { error: rpErr } = await supabase
           .from("round_players")
@@ -1841,7 +1891,7 @@ export default function RoomPage() {
         gameAudio.playWrongShow();
         gameAudio.triggerHapticWrongShow();
 
-        // 2. Discard the card, pass turn
+        // 2. Discard the card
         const updatedDiscard = [...round.discard_pile, showCard];
 
         // Remove card from player hand
@@ -1854,15 +1904,6 @@ export default function RoomPage() {
 
         if (handErr) throw handErr;
 
-        await supabase
-          .from("rounds")
-          .update({
-            discard_pile: updatedDiscard,
-            current_turn_player_id: nextPlayerId,
-            turn_order_index: round.turn_order_index + 1,
-          })
-          .eq("id", round.id);
-
         // 3. Log event
         await supabase.from("game_events").insert({
           round_id: round.id,
@@ -1873,7 +1914,28 @@ export default function RoomPage() {
           event_data: { isValid: false, errors: localResult.errors, showCard },
         });
 
-        toast.error(`WRONG SHOW! +80 points penalty. Turn passed.`);
+        // 4. Check if only 1 active player remains
+        const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+        const remainingActive = currentRPs.filter(
+          p => p.player_id !== user?.id && p.status === "active"
+        );
+
+        if (remainingActive.length === 1 && remainingActive[0]) {
+          // If only 1 player remains, that player wins the round immediately!
+          await declareRoundWinner(remainingActive[0].player_id);
+        } else if (remainingActive.length > 1) {
+          const nextPlayerId = getNextPlayerId(user?.id);
+          await supabase
+            .from("rounds")
+            .update({
+              discard_pile: updatedDiscard,
+              current_turn_player_id: nextPlayerId,
+              turn_order_index: round.turn_order_index + 1,
+            })
+            .eq("id", round.id);
+        }
+
+        toast.error(`WRONG SHOW! +80 points penalty. You are out of this round.`);
       }
     } catch (err: any) {
       toast.error(err.message || "Show failed");
@@ -1883,7 +1945,7 @@ export default function RoomPage() {
   };
 
   const handleDeclareShow = (showCard: Card) => {
-    if (!round || !isMyTurn || !myRoundState?.has_drawn_this_turn || !round.wild_joker) return;
+    if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active" || !myRoundState?.has_drawn_this_turn || !round.wild_joker) return;
     setShowCardToConfirm(showCard);
   };
 
@@ -1933,91 +1995,123 @@ export default function RoomPage() {
     submittedRoundScoresRef.current.add(activeRound.id);
 
     try {
-      const updatedScores = [];
-      const updatedRoomPlayers = [];
+      const updatedScores: {
+        id: string;
+        player_id: string;
+        score_this_round: number;
+        status: string;
+      }[] = [];
 
       for (const rp of allRoundPlayers) {
-        let score = rp.score_this_round;
+        let score: number;
+        let newStatus = rp.status;
 
-        if (score === null) {
-          if (rp.player_id === winnerId) {
-            score = 0;
+        if (rp.player_id === winnerId) {
+          score = 0;
+          newStatus = "winner";
+        } else if (rp.status === "dropped_first") {
+          score = rp.score_this_round !== null && rp.score_this_round > 0 ? rp.score_this_round : 20;
+        } else if (rp.status === "dropped_second") {
+          score = rp.score_this_round !== null && rp.score_this_round > 0 ? rp.score_this_round : 40;
+        } else if (rp.status === "shown_wrong") {
+          score = rp.score_this_round !== null && rp.score_this_round > 0 ? rp.score_this_round : 80;
+        } else if (rp.score_this_round !== null) {
+          score = rp.score_this_round;
+        } else {
+          // Active losing player
+          const jokerInfo = activeRound.wild_joker;
+          const wildRank = jokerInfo.wildRank !== undefined ? jokerInfo.wildRank : ((jokerInfo as any).rank === Rank.PRINTED_JOKER ? Rank.ACE : (jokerInfo as any).rank);
+          const hand = Array.isArray(rp.hand) && rp.hand.length > 0 ? rp.hand : [];
+          if (hand.length === 0) {
+            score = 80; // Full penalty if cards are missing/hidden
           } else {
-            // Run optimal grouping to find minimum points for losing player
-            const jokerInfo = activeRound.wild_joker;
-            const wildRank = jokerInfo.wildRank !== undefined ? jokerInfo.wildRank : ((jokerInfo as any).rank === Rank.PRINTED_JOKER ? Rank.ACE : (jokerInfo as any).rank);
-            const result = findOptimalGrouping(rp.hand, wildRank);
-            // Cap score at 80 points
+            const result = findOptimalGrouping(hand, wildRank);
             score = Math.min(result.minimumPoints, 80);
           }
+          if (newStatus === "winner" || newStatus === "shown_valid") {
+            newStatus = "active";
+          }
         }
-
-        // Track whether the score was already set before this scoring run.
-        // If it was already in the DB (e.g. dropped players with score=20/40),
-        // we must NOT add it to total_score again — that would double-count
-        // if calculateAndSubmitRoundScores somehow runs twice (admin reconnect
-        // between writes while submittedRoundScoresRef was reset).
-        const scoreWasPreSet = rp.score_this_round !== null;
 
         updatedScores.push({
           id: rp.id,
           player_id: rp.player_id,
           score_this_round: score,
-          currentStatus: rp.status,
-          scoreWasPreSet,
+          status: newStatus,
         });
-
-        // Get room player and add score
-        const roomPlayer = playersRef.current.find(p => p.player_id === rp.player_id);
-        if (roomPlayer) {
-          const wasAlreadyEliminated = roomPlayer.status === "eliminated";
-          // Only add score to total if it wasn't already counted in a previous run
-          // (scoreWasPreSet = true means dropped players whose score was written at drop time)
-          const scoreToAdd = wasAlreadyEliminated || scoreWasPreSet ? 0 : score;
-          const newTotalScore = roomPlayer.total_score + scoreToAdd;
-          const isEliminated = wasAlreadyEliminated || newTotalScore >= 250;
-
-          updatedRoomPlayers.push({
-            id: roomPlayer.id,
-            total_score: newTotalScore,
-            status: isEliminated ? "eliminated" : (roomPlayer.status === "disconnected" ? "disconnected" : "active"),
-          });
-        }
       }
 
-      // Submit round scores and update status.
-      // IMPORTANT: Always explicitly write the status for the true winner AND
-      // reset any stale "winner"/"shown_valid" status on non-winners.
-      // This prevents the two-winners bug that occurs when the declarer's
-      // "winner" status is set first but a different player turns out to have
-      // the lowest count (e.g., Rangan had count 4 while Godamani declared).
+      // 1. Submit round scores and update status in round_players
       for (const item of updatedScores) {
-        const isWinner = item.player_id === winnerId;
-        // For non-winners who were prematurely marked "winner" or "shown_valid"
-        // (e.g. the person who clicked declare but actually lost), reset their
-        // status back to "active" so only one player shows the trophy.
-        const needsStatusReset =
-          !isWinner &&
-          (item.currentStatus === "winner" || item.currentStatus === "shown_valid");
         await supabase
           .from("round_players")
           .update({
             score_this_round: item.score_this_round,
-            ...(isWinner
-              ? { status: "winner" }
-              : needsStatusReset
-              ? { status: "active" }
-              : {}),
+            status: item.status,
           })
           .eq("id", item.id);
       }
 
-      // Update room players total scores
-      for (const item of updatedRoomPlayers) {
+      // 2. Fetch all completed rounds in this room to compute true cumulative totals
+      const { data: allRoundsData } = await supabase
+        .from("rounds")
+        .select("id, round_number, status")
+        .eq("room_id", room.id);
+
+      const completedRoundIds = (allRoundsData || [])
+        .filter((r: any) => r.status === "completed" || r.id === activeRound.id)
+        .map((r: any) => r.id);
+
+      const playerCumulativeMap: Record<string, number> = {};
+      if (completedRoundIds.length > 0) {
+        const { data: allRpData } = await supabase
+          .from("round_players")
+          .select("player_id, score_this_round, status, round_id")
+          .in("round_id", completedRoundIds);
+
+        if (allRpData) {
+          allRpData.forEach((rp: any) => {
+            let val = rp.score_this_round;
+            if (rp.round_id === activeRound.id) {
+              const matched = updatedScores.find(s => s.player_id === rp.player_id);
+              if (matched) val = matched.score_this_round;
+            }
+            if (val === null || val === undefined) {
+              val = rp.status === "winner" || rp.status === "shown_valid"
+                ? 0
+                : rp.status === "dropped_first"
+                ? 20
+                : rp.status === "dropped_second"
+                ? 40
+                : 80;
+            }
+            playerCumulativeMap[rp.player_id] = (playerCumulativeMap[rp.player_id] || 0) + val;
+          });
+        }
+      }
+
+      const updatedRoomPlayers = [];
+      const currentPlayers = playersRef.current.length > 0 ? playersRef.current : players;
+
+      for (const roomPlayer of currentPlayers) {
+        const wasAlreadyEliminated = roomPlayer.status === "eliminated";
+        const newTotalScore = playerCumulativeMap[roomPlayer.player_id] ?? roomPlayer.total_score;
+        const isEliminated = wasAlreadyEliminated || newTotalScore >= 250;
+
+        updatedRoomPlayers.push({
+          id: roomPlayer.id,
+          player_id: roomPlayer.player_id,
+          total_score: newTotalScore,
+          status: isEliminated ? "eliminated" : (roomPlayer.status === "disconnected" ? "disconnected" : "active"),
+        });
+
         await supabase
           .from("room_players")
-          .update({ total_score: item.total_score, status: item.status })
-          .eq("id", item.id);
+          .update({
+            total_score: newTotalScore,
+            status: isEliminated ? "eliminated" : (roomPlayer.status === "disconnected" ? "disconnected" : "active"),
+          })
+          .eq("id", roomPlayer.id);
       }
 
       // Check if game is completed (only 1 active player left)
@@ -2035,14 +2129,13 @@ export default function RoomPage() {
         // Update stats
         const finalScoresMap: Record<string, number> = {};
         for (const rp of allRoundPlayers) {
-          const roomPlayer = playersRef.current.find(p => p.player_id === rp.player_id);
+          const roomPlayer = updatedRoomPlayers.find(p => p.player_id === rp.player_id);
           if (roomPlayer) {
-            const item = updatedScores.find(x => x.player_id === rp.player_id);
-            const score = item ? item.score_this_round : 0;
-            finalScoresMap[rp.player_id] = roomPlayer.total_score + score;
+            finalScoresMap[rp.player_id] = roomPlayer.total_score;
           }
         }
         await updateGameFinishedStats([winnerId], finalScoresMap);
+        await fetchPayments(room.id);
       } else {
         // Game continues. Check if host/admin was eliminated
         if (me && me.is_admin) {
@@ -2074,14 +2167,14 @@ export default function RoomPage() {
         }
       }
 
-      // Refresh data
+      // Refresh data immediately
       await fetchPlayers(room.id);
-      await fetchRoundPlayers(activeRound.id, activeRound.status);
+      await fetchRoundPlayers(activeRound.id, "completed");
+      await fetchScoreHistory(room.id);
 
       toast.info("Round scores computed and scoreboard updated!");
     } catch (err) {
       console.error("Scoring submission failed:", err);
-      // Remove round ID from submitted set so it can be retried if it fails
       submittedRoundScoresRef.current.delete(activeRound.id);
     } finally {
       isSubmittingScoresRef.current = false;
@@ -2456,24 +2549,26 @@ export default function RoomPage() {
       // 2. Set status to eliminated in room_players
       await supabase
         .from("room_players")
-        .update({ status: "eliminated" })
+        .update({ status: "eliminated", total_score: 250 })
         .eq("id", me.id);
 
       // If active round is in progress, mark player as dropped in round_players
       if (round && round.status === "active" && myRoundState?.status === "active") {
-        const nextPlayerId = getNextPlayerId();
-
         await supabase
           .from("round_players")
-          .update({ status: "dropped_second", score_this_round: 0 })
+          .update({ status: "dropped_second", score_this_round: 80 })
           .eq("round_id", round.id)
           .eq("player_id", user?.id);
 
-        const remainingActive = roundPlayers.filter(
+        const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+        const remainingActive = currentRPs.filter(
           p => p.player_id !== user?.id && p.status === "active"
         );
 
-        if (remainingActive.length > 1) {
+        if (remainingActive.length === 1 && remainingActive[0]) {
+          await declareRoundWinner(remainingActive[0].player_id);
+        } else if (remainingActive.length > 1) {
+          const nextPlayerId = getNextPlayerId(user?.id);
           await supabase
             .from("rounds")
             .update({
@@ -2481,24 +2576,6 @@ export default function RoomPage() {
               turn_order_index: round.turn_order_index + 1,
             })
             .eq("id", round.id);
-        } else if (remainingActive.length === 1 && remainingActive[0]) {
-          await supabase
-            .from("rounds")
-            .update({
-              status: "completed",
-              current_turn_player_id: null
-            })
-            .eq("id", round.id);
-
-          const winnerId = remainingActive[0].player_id;
-          await supabase.from("game_events").insert({
-            round_id: round.id,
-            room_id: room?.id,
-            player_id: winnerId,
-            sequence_number: round.turn_order_index + 1,
-            event_type: "ROUND_ENDED",
-            event_data: { winnerId, reason: "Last player remaining after quit" },
-          });
         }
       }
 
@@ -2528,6 +2605,7 @@ export default function RoomPage() {
       }
 
       toast.success("You quit the game");
+      await unlockOrientation().catch(() => {});
       window.location.href = "/dashboard";
     } catch (err: any) {
       toast.error(err.message || "Failed to quit room");
@@ -2536,23 +2614,20 @@ export default function RoomPage() {
 
   const getNextPlayerId = (currentTurnPlayerId?: string): string => {
     if (!round) return "";
-    // Include shown_wrong players — they got 80pt penalty but still take turns
-    const activeRoundPlayers = roundPlayers.filter(
-      p => p.status === "active" || p.status === "shown_wrong"
-    );
-    if (activeRoundPlayers.length <= 1) return user?.id || "";
+    const currentRPs = roundPlayersRef.current.length > 0 ? roundPlayersRef.current : roundPlayers;
+    const activeRoundPlayers = [...currentRPs]
+      .filter(p => p.status === "active")
+      .sort((a, b) => a.seat_position - b.seat_position);
+
+    if (activeRoundPlayers.length <= 1) return activeRoundPlayers[0]?.player_id || "";
 
     const referencePlayerId = currentTurnPlayerId || round.current_turn_player_id || user?.id || "";
-    const currentIndex = activeRoundPlayers.findIndex(p => p.player_id === referencePlayerId);
-    if (currentIndex === -1) {
-      const fallbackIdx = activeRoundPlayers.findIndex(p => p.player_id === user?.id);
-      if (fallbackIdx === -1) return activeRoundPlayers[0]?.player_id || "";
-      const nextIdx = (fallbackIdx + 1) % activeRoundPlayers.length;
-      return activeRoundPlayers[nextIdx]?.player_id || "";
-    }
+    const currentRefPlayer = currentRPs.find(p => p.player_id === referencePlayerId);
+    const currentSeat = currentRefPlayer ? currentRefPlayer.seat_position : -1;
 
-    const nextIdx = (currentIndex + 1) % activeRoundPlayers.length;
-    return activeRoundPlayers[nextIdx]?.player_id || "";
+    // Find next active player with seat_position > currentSeat, wrapping around
+    const nextPlayer = activeRoundPlayers.find(p => p.seat_position > currentSeat);
+    return nextPlayer ? nextPlayer.player_id : activeRoundPlayers[0]!.player_id;
   };
 
   const handleCopyCode = async () => {
@@ -3128,19 +3203,17 @@ export default function RoomPage() {
 
   // Render loading screen if room details or players are not loaded yet
   if (!room || players.length === 0) {
-    const isOfflineOrError = !isBrowserOnline || channelStatus === "CLOSED" || channelStatus === "CHANNEL_ERROR" || channelStatus === "TIMED_OUT";
+    const isOffline = !isBrowserOnline;
     return (
       <div className="min-h-dvh bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] flex flex-col items-center justify-center p-6 text-center select-none">
-        {isOfflineOrError ? (
+        {isOffline ? (
           <div className="max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl flex flex-col items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500">
               <Smartphone className="w-6 h-6 animate-bounce" />
             </div>
             <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
             <p className="text-sm text-[var(--color-text-secondary)]">
-              {!isBrowserOnline
-                ? "Your internet connection appears to be offline. Please check your network status."
-                : "Attempting to reconnect to the game server. Please wait..."}
+              Your internet connection appears to be offline. Please check your network status.
             </p>
             <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
@@ -3160,30 +3233,26 @@ export default function RoomPage() {
   // Render components
   return (
     <div className="h-dvh overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] safe-top safe-bottom flex flex-col">
-      {/* Dynamic fullscreen connection loss overlay */}
-      {(!isBrowserOnline ||
-        channelStatus === "CLOSED" ||
-        channelStatus === "CHANNEL_ERROR" ||
-        channelStatus === "TIMED_OUT" ||
-        (hasSubscribed && channelStatus !== "SUBSCRIBED")) && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
-            <div className="max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl flex flex-col items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500">
-                <Smartphone className="w-6 h-6 animate-bounce" />
-              </div>
-              <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
-              <p className="text-sm text-[var(--color-text-secondary)]">
-                {!isBrowserOnline
-                  ? "Your internet connection appears to be offline. Please check your network status."
-                  : "Attempting to reconnect to the game server. Please wait..."}
-              </p>
-              <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
-                Reconnecting
-              </div>
+      {/* Dynamic fullscreen connection loss overlay (only if offline or error) */}
+      {(!isBrowserOnline || channelStatus === "CHANNEL_ERROR" || channelStatus === "TIMED_OUT") && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
+          <div className="max-w-md p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-2xl flex flex-col items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500">
+              <Smartphone className="w-6 h-6 animate-bounce" />
+            </div>
+            <h3 className="text-lg font-bold font-[Outfit]">Connection Lost</h3>
+            <p className="text-sm text-[var(--color-text-secondary)]">
+              {!isBrowserOnline
+                ? "Your internet connection appears to be offline. Please check your network status."
+                : "Attempting to reconnect to the game server. Please wait..."}
+            </p>
+            <div className="flex items-center gap-1.5 text-xs text-amber-500 font-bold bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping" />
+              Reconnecting
             </div>
           </div>
-        )}
+        </div>
+      )}
       {/* 1. LOBBY STATE */}
       {room && room.status === "waiting" && (
         <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
@@ -3195,7 +3264,13 @@ export default function RoomPage() {
             >
               <div>
                 <div className="flex justify-between items-center mb-6">
-                  <Link to="/dashboard" className="text-sm text-[var(--color-text-muted)] hover:text-white flex items-center gap-1">
+                  <Link
+                    to="/dashboard"
+                    onClick={() => {
+                      unlockOrientation().catch(() => {});
+                    }}
+                    className="text-sm text-[var(--color-text-muted)] hover:text-white flex items-center gap-1"
+                  >
                     <ArrowLeft className="w-4 h-4" /> Dashboard
                   </Link>
                   <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-full font-semibold">
@@ -3264,20 +3339,18 @@ export default function RoomPage() {
                   {isAdmin ? (
                     <button
                       onClick={() => handleToggleVoice(!isVoiceChatEnabled)}
-                      className={`px-3 py-1.5 rounded-lg font-bold text-xs border transition-all ${
-                        isVoiceChatEnabled
+                      className={`px-3 py-1.5 rounded-lg font-bold text-xs border transition-all ${isVoiceChatEnabled
                           ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/25 hover:bg-emerald-500/25"
                           : "bg-white/5 text-white/40 border-white/10 hover:bg-white/10"
-                      }`}
+                        }`}
                     >
                       {isVoiceChatEnabled ? "Enabled" : "Disabled"}
                     </button>
                   ) : (
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                      isVoiceChatEnabled
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${isVoiceChatEnabled
                         ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
                         : "bg-white/5 text-white/30 border-white/10"
-                    }`}>
+                      }`}>
                       {isVoiceChatEnabled ? "ACTIVE" : "DISABLED"}
                     </span>
                   )}
@@ -3391,509 +3464,622 @@ export default function RoomPage() {
         </div>
       )}
 
-      {/* 2. GAME PLAY STATE */}
-      {room && room.status === "active" && round && round.status === "active" && (
-        <>
-          <GameScreen
-            betAmount={room.bet_amount}
-            roundNumber={round.round_number}
-            roundStatus={round.status}
-            wildJoker={round.wild_joker}
-            currentTurnPlayerId={round.current_turn_player_id}
-            turnOrderIndex={round.turn_order_index}
-            discardPile={round.discard_pile || []}
-            players={players}
-            roundPlayers={roundPlayers}
-            userId={user?.id}
-            isAdmin={isAdmin}
-            isMyTurn={isMyTurn}
-            isSpectator={isSpectator}
-            onlinePlayerIds={onlinePlayerIds}
-            floatingEmojis={floatingEmojis}
-            myHand={myHand}
-            selectedCards={selectedCards}
-            myTotalScore={me?.total_score ?? 0}
-            hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
-            onQuit={handleQuitGame}
-            onDrawCard={handleDrawCard}
-            onPickDiscard={handlePickDiscard}
-            onDiscard={handleDiscardCard}
-            onDeclareShow={handleDeclareShow}
-            onDropFirst={() => handleDrop("FIRST")}
-            onDropSecond={() => handleDrop("SECOND")}
-            onCardClick={handleCardClick}
-            onReorderHand={setMyHand}
-            rowSizes={rowSizes}
-            onRowSizesChange={setRowSizes}
-            onAdminKick={handleAdminKick}
-            getTimeoutText={getTimeoutText}
-            soundOn={soundOn}
-            vibrationOn={vibrationOn}
-            onToggleSound={toggleSound}
-            onToggleVibration={toggleVibration}
-            onOpenChat={() => { setIsChatOpen(true); setUnreadCount(0); }}
-            unreadCount={unreadCount}
-            spectatorContent={
-              <div className={`w-full bg-[#0D1B2A]/95 backdrop-blur-md border-t p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0 ${isDropped ? "border-amber-500/20" : "border-emerald-500/20"
-                }`}>
-                <div className="flex flex-col sm:flex-row items-center justify-between w-full max-w-4xl gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2.5 rounded-xl flex items-center justify-center shrink-0 border ${isDropped
-                      ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
-                      : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                      }`}>
-                      <svg className="w-6 h-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                      </svg>
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[14px] uppercase font-bold tracking-wider ${isDropped ? "text-amber-400" : "text-emerald-400"
-                          }`}>Observer Mode</span>
-                        <span className="px-2 py-0.5 rounded-full text-[12px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                          {me?.status === "eliminated"
-                            ? `Eliminated (Score: ${me.total_score})`
-                            : isDropped
-                              ? `Dropped (Score: +${myRoundState?.score_this_round || (myRoundState?.status === "dropped_second" ? 40 : 20)})`
-                              : "Spectating Round"}
-                        </span>
+      {/* 2. GAME STARTED STATE (Landscape container for mobile PWA & desktop until exited) */}
+      {room && (room.status === "active" || room.status === "finished") && (
+        <div className="game-landscape-container">
+          {round && round.status === "active" && (
+            <>
+              <GameScreen
+                betAmount={room.bet_amount}
+                roundNumber={round.round_number}
+                roundStatus={round.status}
+                wildJoker={round.wild_joker}
+                currentTurnPlayerId={round.current_turn_player_id}
+                turnOrderIndex={round.turn_order_index}
+                discardPile={round.discard_pile || []}
+                players={players}
+                roundPlayers={roundPlayers}
+                userId={user?.id}
+                isAdmin={isAdmin}
+                isMyTurn={isMyTurn}
+                isSpectator={isSpectator}
+                onlinePlayerIds={onlinePlayerIds}
+                floatingEmojis={floatingEmojis}
+                myHand={myHand}
+                selectedCards={selectedCards}
+                myTotalScore={me?.total_score ?? 0}
+                hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
+                onQuit={handleQuitGame}
+                onDrawCard={handleDrawCard}
+                onPickDiscard={handlePickDiscard}
+                onDiscard={handleDiscardCard}
+                onDeclareShow={handleDeclareShow}
+                onDropFirst={() => handleDrop("FIRST")}
+                onDropSecond={() => handleDrop("SECOND")}
+                onCardClick={handleCardClick}
+                onReorderHand={setMyHand}
+                rowSizes={rowSizes}
+                onRowSizesChange={setRowSizes}
+                onAdminKick={handleAdminKick}
+                getTimeoutText={getTimeoutText}
+                soundOn={soundOn}
+                vibrationOn={vibrationOn}
+                onToggleSound={toggleSound}
+                onToggleVibration={toggleVibration}
+                onOpenChat={() => { setIsChatOpen(true); setUnreadCount(0); }}
+                unreadCount={unreadCount}
+                spectatorContent={
+                  <div className={`w-full bg-[#0D1B2A]/95 backdrop-blur-md border-t p-4 pb-6 flex flex-col items-center justify-between gap-4 z-30 shadow-[0_-10px_30px_rgba(0,0,0,0.5)] shrink-0 ${isDropped ? "border-amber-500/20" : "border-emerald-500/20"
+                    }`}>
+                    <div className="flex flex-col sm:flex-row items-center justify-between w-full max-w-4xl gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2.5 rounded-xl flex items-center justify-center shrink-0 border ${isDropped
+                          ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                          : "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                          }`}>
+                          <svg className="w-6 h-6 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[14px] uppercase font-bold tracking-wider ${isDropped ? "text-amber-400" : "text-emerald-400"
+                              }`}>Observer Mode</span>
+                            <span className="px-2 py-0.5 rounded-full text-[12px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                              {me?.status === "eliminated"
+                                ? `Eliminated (Score: ${me.total_score})`
+                                : isDropped
+                                  ? `Dropped (Score: +${myRoundState?.score_this_round || (myRoundState?.status === "dropped_second" ? 40 : 20)})`
+                                  : "Spectating Round"}
+                            </span>
+                          </div>
+                          <p className="text-[14px] text-white/50 mt-0.5 max-w-md">
+                            {me?.status === "eliminated"
+                              ? "You have been eliminated from the game table. You can still chat, send reactions, and watch."
+                              : isDropped
+                                ? "You were dropped from the current round. You can still watch, chat, and send reactions, and you will rejoin when the next round starts."
+                                : "You joined mid-round. You'll join when the next round starts."}
+                          </p>
+                        </div>
                       </div>
-                      <p className="text-[14px] text-white/50 mt-0.5 max-w-md">
-                        {me?.status === "eliminated"
-                          ? "You have been eliminated from the game table. You can still chat, send reactions, and watch."
-                          : isDropped
-                            ? "You were dropped from the current round. You can still watch, chat, and send reactions, and you will rejoin when the next round starts."
-                            : "You joined mid-round. You'll join when the next round starts."}
-                      </p>
+                      <div className="flex items-center gap-4 shrink-0">
+                        {["😂", "🔥", "👍", "💬"].map((emoji) => (
+                          <button
+                            key={emoji}
+                            onClick={() => sendEmojiReaction(emoji)}
+                            type="button"
+                            className="text-2xl hover:scale-125 active:scale-95 transition-transform p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                        <button
+                          onClick={() => { setIsChatOpen(true); setUnreadCount(0); }}
+                          className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-md transition-colors flex items-center gap-1.5 min-h-[44px]"
+                        >
+                          Chat
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    {["😂", "🔥", "👍", "💬"].map((emoji) => (
-                      <button
-                        key={emoji}
-                        onClick={() => sendEmojiReaction(emoji)}
-                        type="button"
-                        className="text-2xl hover:scale-125 active:scale-95 transition-transform p-1.5 min-w-[44px] min-h-[44px] flex items-center justify-center"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
+                }
+                voiceContent={
+                  isVoiceChatEnabled ? (
                     <button
-                      onClick={() => { setIsChatOpen(true); setUnreadCount(0); }}
-                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-md transition-colors flex items-center gap-1.5 min-h-[44px]"
+                      onClick={() => setIsVoiceOpen(v => !v)}
+                      className={`w-full py-1 sm:py-1.5 md:py-2 rounded-lg border text-[8px] sm:text-[9px] md:text-[10px] lg:text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-1 md:gap-1.5 transition-all duration-200 select-none ${voice.isInVoice
+                          ? "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-500"
+                          : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                        }`}
+                      title="Voice Chat Panel"
                     >
-                      Chat
-                    </button>
-                  </div>
-                </div>
-              </div>
-            }
-            voiceContent={
-              isVoiceChatEnabled ? (
-                <button
-                  onClick={() => setIsVoiceOpen(v => !v)}
-                  className={`w-full py-1 sm:py-1.5 md:py-2 rounded-lg border text-[8px] sm:text-[9px] md:text-[10px] lg:text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-1 md:gap-1.5 transition-all duration-200 select-none ${
-                    voice.isInVoice
-                      ? "bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-500"
-                      : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
-                  }`}
-                  title="Voice Chat Panel"
-                >
-                  {/* Voice Speaker Icon */}
-                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
-                    {voice.isMuted ? (
-                      <>
-                        <line x1="1" y1="1" x2="23" y2="23" />
-                        <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                        <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </>
-                    ) : (
-                      <>
-                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="23" />
-                        <line x1="8" y1="23" x2="16" y2="23" />
-                      </>
-                    )}
-                  </svg>
-                  <span className="truncate">
-                    {voice.isInVoice ? `Voice (${voice.voiceParticipants.length})` : "Voice"}
-                  </span>
-                  {voice.isInVoice && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
-                  )}
-                </button>
-              ) : undefined
-            }
-          />
-
-          {/* Chat Drawer Overlay */}
-          <AnimatePresence>
-            {isChatOpen && (
-              <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
-                <div className="flex-1" onClick={() => setIsChatOpen(false)} />
-                <motion.div
-                  initial={{ x: "100%" }}
-                  animate={{ x: 0 }}
-                  exit={{ x: "100%" }}
-                  transition={{ type: "tween", duration: 0.25 }}
-                  className="w-full max-w-sm bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4 relative"
-                >
-                  <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
-                    <h3 className="font-bold text-lg font-[Outfit] text-[var(--color-gold)]">Room Chat</h3>
-                    <button
-                      onClick={() => setIsChatOpen(false)}
-                      className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      {/* Voice Speaker Icon */}
+                      <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+                        {voice.isMuted ? (
+                          <>
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                          </>
+                        ) : (
+                          <>
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                          </>
+                        )}
                       </svg>
+                      <span className="truncate">
+                        {voice.isInVoice ? `Voice (${voice.voiceParticipants.length})` : "Voice"}
+                      </span>
+                      {voice.isInVoice && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+                      )}
                     </button>
-                  </div>
-                  <div className="flex-1 min-h-0">
-                    <ChatContent
-                      chatMessages={chatMessages}
-                      userId={user?.id}
-                      onSendMessage={sendMessage}
-                      onSendReaction={sendEmojiReaction}
-                    />
-                  </div>
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
+                  ) : undefined
+                }
+              />
 
-          {/* Voice Drawer Overlay (in-game) */}
-          <AnimatePresence>
-            {isVoiceOpen && (
-              <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
-                <div className="flex-1" onClick={() => setIsVoiceOpen(false)} />
-                <motion.div
-                  initial={{ x: "100%" }}
-                  animate={{ x: 0 }}
-                  exit={{ x: "100%" }}
-                  transition={{ type: "tween", duration: 0.25 }}
-                  className="w-full max-w-xs bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4"
-                >
-                  <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
-                    <h3 className="font-bold text-lg font-[Outfit] text-emerald-400">Voice Chat</h3>
-                    <button
-                      onClick={() => setIsVoiceOpen(false)}
-                      className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
+              {/* Chat Drawer Overlay */}
+              <AnimatePresence>
+                {isChatOpen && (
+                  <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
+                    <div className="flex-1" onClick={() => setIsChatOpen(false)} />
+                    <motion.div
+                      initial={{ x: "100%" }}
+                      animate={{ x: 0 }}
+                      exit={{ x: "100%" }}
+                      transition={{ type: "tween", duration: 0.25 }}
+                      className="w-full max-w-sm bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4 relative"
                     >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                  <VoicePanel
-                    isInVoice={voice.isInVoice}
-                    isMuted={voice.isMuted}
-                    isJoining={voice.isJoining}
-                    voiceParticipants={voice.voiceParticipants}
-                    error={voice.error}
-                    onJoin={voice.join}
-                    onLeave={voice.leave}
-                    onToggleMute={voice.toggleMute}
-                    compact
-                  />
-                </motion.div>
-              </div>
-            )}
-          </AnimatePresence>
-        </>
-      )}
-
-      {/* 3. SCOREBOARD / BETWEEN ROUNDS STATE */}
-      {room && room.status === "active" && round && round.status === "completed" && (
-        <PostRoundModal
-          round={{ round_number: round.round_number, wild_joker: round.wild_joker }}
-          players={players}
-          roundPlayers={roundPlayers}
-          userId={user?.id}
-          isAdmin={isAdmin}
-          onlinePlayerIds={onlinePlayerIds}
-          scoreHistory={scoreHistory}
-          onStartNextRound={() => startNewRound(round.round_number + 1)}
-          me={me}
-          activeLeaveShareVote={activeLeaveShareVote}
-          activeQuitVote={activeQuitVote}
-          activePauseVote={activePauseVote}
-          onInitiateLeaveShareVote={initiateLeaveShareVote}
-          onInitiateMutualQuit={initiateMutualQuit}
-          onInitiatePause={initiatePauseVote}
-          ScoreTrendChart={ScoreTrendChart}
-          isChartVisible={isChartVisible}
-          onToggleChart={() => setIsChartVisible(!isChartVisible)}
-          myHand={myHand}
-          onReorderHand={setMyHand}
-          rowSizes={rowSizes}
-          onRowSizesChange={setRowSizes}
-        />
-      )}
-
-
-
-      {/* 4. GAME ENDED / PAYMENT SETTLEMENT STATE */}
-      {room && room.status === "finished" && (
-        <div className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="w-full max-w-lg p-6 rounded-2xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] shadow-xl max-h-[90dvh] overflow-y-auto"
-          >
-            <h2 className="text-2xl font-bold font-[Outfit] text-center mb-1 flex items-center justify-center gap-2">
-              <Trophy className="w-6 h-6 text-amber-400" /> Game Over!
-            </h2>
-            <p className="text-center text-sm text-[var(--color-text-secondary)] mb-6">
-              Final settlements and payments ledger.
-            </p>
-
-            {/* Final Standings */}
-            <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
-              Final Leaderboard
-            </h3>
-            <div className="space-y-2 mb-6">
-              {players.map((p, idx) => (
-                <div
-                  key={p.id}
-                  className={`p-3 rounded-xl flex justify-between items-center bg-[var(--color-bg-secondary)] border border-[var(--color-border-default)]`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-xs text-emerald-400 w-4 text-center">{idx + 1}</span>
-                    <span className="text-sm font-semibold">{p.name} {p.player_id === user?.id && "(You)"}</span>
-                    {(p.status === "disconnected" || (p.player_id !== user?.id && !onlinePlayerIds.includes(p.player_id))) && (
-                      <span className="text-[9px] bg-red-500/10 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded animate-pulse">OFFLINE</span>
-                    )}
-                  </div>
-                  <span className="font-mono text-xs text-[var(--color-text-secondary)]">
-                    Score: {p.total_score} pts
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Score Trend Chart */}
-            {scoreHistory.length > 1 && (
-              <div className="p-3 rounded-xl bg-slate-950/20 border border-[var(--color-border-default)] mb-4">
-                <button
-                  onClick={() => setIsChartVisible(!isChartVisible)}
-                  className="w-full flex justify-between items-center text-xs font-semibold text-[var(--color-text-secondary)] hover:text-white uppercase tracking-wider"
-                >
-                  <span>Score Trend Progress</span>
-                  <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded border border-white/5">
-                    {isChartVisible ? "Hide Chart" : "Show Chart"}
-                  </span>
-                </button>
-                {isChartVisible && (
-                  <div className="mt-3 pt-3 border-t border-white/5">
-                    <ScoreTrendChart scoreHistory={scoreHistory} players={players} />
+                      <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
+                        <h3 className="font-bold text-lg font-[Outfit] text-[var(--color-gold)]">Room Chat</h3>
+                        <button
+                          onClick={() => setIsChatOpen(false)}
+                          className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        <ChatContent
+                          chatMessages={chatMessages}
+                          userId={user?.id}
+                          onSendMessage={sendMessage}
+                          onSendReaction={sendEmojiReaction}
+                        />
+                      </div>
+                    </motion.div>
                   </div>
                 )}
-              </div>
-            )}
+              </AnimatePresence>
 
-            {/* Payments Ledger */}
-            <h3 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-3">
-              Bet Settlements (₹{room.bet_amount} Bet)
-            </h3>
-            <div className="space-y-3 mb-6">
-              {payments.length === 0 ? (
-                <p className="text-xs text-[var(--color-text-muted)] text-center py-4">No payments required (e.g. everyone opted in to leave share).</p>
-              ) : (
-                payments.map(pay => {
-                  const payer = players.find(p => p.player_id === pay.payer_id);
-                  const payee = players.find(p => p.player_id === pay.payee_id);
+              {/* Voice Drawer Overlay (in-game) */}
+              <AnimatePresence>
+                {isVoiceOpen && (
+                  <div className="fixed inset-0 bg-black/40 z-[300] flex justify-end">
+                    <div className="flex-1" onClick={() => setIsVoiceOpen(false)} />
+                    <motion.div
+                      initial={{ x: "100%" }}
+                      animate={{ x: 0 }}
+                      exit={{ x: "100%" }}
+                      transition={{ type: "tween", duration: 0.25 }}
+                      className="w-full max-w-xs bg-[var(--color-bg-card)] border-l border-[var(--color-border-default)] shadow-2xl h-full flex flex-col p-4"
+                    >
+                      <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--color-border-default)]">
+                        <h3 className="font-bold text-lg font-[Outfit] text-emerald-400">Voice Chat</h3>
+                        <button
+                          onClick={() => setIsVoiceOpen(false)}
+                          className="p-1 rounded hover:bg-white/10 text-[var(--color-text-muted)] hover:text-white transition-colors"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                      <VoicePanel
+                        isInVoice={voice.isInVoice}
+                        isMuted={voice.isMuted}
+                        isJoining={voice.isJoining}
+                        voiceParticipants={voice.voiceParticipants}
+                        error={voice.error}
+                        onJoin={voice.join}
+                        onLeave={voice.leave}
+                        onToggleMute={voice.toggleMute}
+                        compact
+                      />
+                    </motion.div>
+                  </div>
+                )}
+              </AnimatePresence>
 
-                  const isPayerMe = pay.payer_id === user?.id;
-                  const isPayeeMe = pay.payee_id === user?.id;
-
-                  const payeeUpi = payee?.upi_id || "";
+              {/* SHOW DECLARE CONFIRMATION MODAL (Landscape fixed inside game container) */}
+              <AnimatePresence>
+                {showCardToConfirm && (() => {
+                  const showCard = showCardToConfirm;
 
                   return (
                     <div
-                      key={pay.id}
-                      className={`p-3.5 rounded-xl border flex justify-between items-center bg-[var(--color-bg-secondary)] ${pay.status === "completed"
-                        ? "border-emerald-500/20 opacity-60"
-                        : "border-[var(--color-border-default)]"
-                        }`}
+                      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm pointer-events-auto"
+                      onClick={() => setShowCardToConfirm(null)}
                     >
-                      <div className="text-xs">
-                        <div className="font-semibold text-sm">
-                          {payer?.name} → {payee?.name}
+                      <motion.div
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        exit={{ scale: 0.9, opacity: 0 }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-slate-900 border border-amber-500/40 rounded-2xl p-4 sm:p-5 w-full max-w-xs sm:max-w-sm shadow-2xl relative text-left select-none overflow-hidden"
+                        style={{
+                          background: 'linear-gradient(135deg, rgba(15,23,42,0.98), rgba(10,26,10,0.98))',
+                          boxShadow: '0 12px 40px rgba(0,0,0,0.85), 0 0 20px rgba(245,166,35,0.15)',
+                        }}
+                      >
+                        {/* Close button */}
+                        <button
+                          onClick={() => setShowCardToConfirm(null)}
+                          className="absolute top-3 right-3 text-white/50 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+
+                        {/* User / Action Header */}
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="w-10 h-10 rounded-full overflow-hidden bg-amber-500/20 border-2 border-amber-400 flex items-center justify-center font-bold text-amber-300 text-base shrink-0 shadow-[0_0_14px_rgba(245,166,35,0.3)]">
+                            <Trophy className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h3 className="font-bold text-white text-base leading-none">Declare Show</h3>
+                            <p className="text-[11px] text-white/60 mt-1 leading-tight">
+                              Place finish card to declare show and end round.
+                            </p>
+                          </div>
                         </div>
-                        <div className="text-[var(--color-text-muted)] mt-1 font-mono">
-                          Amount: ₹{pay.amount} | Status:{" "}
-                          <span
-                            className={
-                              pay.status === "completed"
-                                ? "text-emerald-400"
-                                : pay.status === "paid"
-                                ? "text-amber-400 font-bold"
-                                : "text-slate-400"
-                            }
+
+                        {/* Landscape Optimized Center Row: Declaring Card + Validation Status */}
+                        <div className="flex items-center gap-3 mb-3.5 bg-black/35 p-2.5 rounded-xl border border-white/5">
+                          {/* Finish Card */}
+                          <div className="flex flex-col items-center shrink-0">
+                            <span className="text-[8.5px] font-black tracking-wider text-amber-400 uppercase mb-1 flex items-center gap-0.5">
+                              <Sparkles className="w-2.5 h-2.5" /> Finish
+                            </span>
+                            <div className="p-0.5 rounded-lg bg-black/60 border border-amber-400/40 shadow-[0_0_14px_rgba(245,166,35,0.3)]">
+                              <PlayingCard card={showCard} size="sm" isWildJoker={showConfirmMeta.isWildFinishCard} />
+                            </div>
+                          </div>
+
+                          {/* Live Meld Validation Badge */}
+                          <div className="flex-1 min-w-0">
+                            <div
+                              className={`p-2 rounded-lg border flex items-start gap-2 ${
+                                showConfirmMeta.localResult.isValid
+                                  ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.15)]"
+                                  : "bg-amber-500/15 border-amber-500/40 text-amber-300 shadow-[0_0_10px_rgba(245,166,35,0.15)]"
+                              }`}
+                            >
+                              {showConfirmMeta.localResult.isValid ? (
+                                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                              ) : (
+                                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                              )}
+                              <div className="min-w-0">
+                                <div className="font-black text-[11px] tracking-wide uppercase leading-tight">
+                                  {showConfirmMeta.localResult.isValid ? "Valid Show (0 Pts)" : "Show Warning (80 Pts)"}
+                                </div>
+                                <div className="text-[10px] text-white/70 leading-tight mt-0.5">
+                                  {showConfirmMeta.localResult.isValid
+                                    ? "Cards satisfy all meld rules."
+                                    : "Invalid show incurs an 80-pt penalty."}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex gap-2 w-full pt-1 border-t border-white/10">
+                          <button
+                            onClick={() => setShowCardToConfirm(null)}
+                            className="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white transition-all cursor-pointer text-center"
                           >
-                            {pay.status === "completed"
-                              ? "SETTLED"
-                              : pay.status === "paid"
-                              ? "AWAITING CONFIRMATION"
-                              : "PENDING"}
-                          </span>
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => {
+                              const card = showCard;
+                              setShowCardToConfirm(null);
+                              executeDeclareShow(card);
+                            }}
+                            className={`flex-1 py-2 px-3 rounded-xl text-xs font-black shadow-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                              showConfirmMeta.localResult.isValid
+                                ? "bg-gradient-to-r from-emerald-500 via-emerald-600 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white shadow-emerald-900/40 border border-emerald-400/40"
+                                : "bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 hover:from-amber-500 hover:to-amber-400 text-black shadow-amber-950/40 border border-amber-400/40"
+                            }`}
+                          >
+                            <Trophy className="w-3.5 h-3.5" />
+                            <span>{showConfirmMeta.localResult.isValid ? "Confirm Show" : "Declare"}</span>
+                          </button>
                         </div>
-                        {pay.status !== "completed" && (
-                          <div className="text-[var(--color-text-secondary)] mt-1 font-mono text-[11px]">
-                            {payeeUpi ? (
-                              <>
-                                UPI ID:{" "}
-                                <button
-                                  type="button"
-                                  onClick={() => copyToClipboard(payeeUpi)}
-                                  className="font-bold text-emerald-400 hover:text-emerald-300 underline cursor-pointer focus:outline-none"
-                                  title="Click to copy"
-                                >
-                                  {payeeUpi}
-                                </button>
-                              </>
-                            ) : (
-                              <span className="text-[var(--color-text-muted)] italic">UPI ID not provided</span>
+                      </motion.div>
+                    </div>
+                  );
+                })()}
+              </AnimatePresence>
+            </>
+          )}
+
+          {/* 3. SCOREBOARD / BETWEEN ROUNDS STATE */}
+          {round && round.status === "completed" && !dismissedPostRoundForSettlement && (
+            <PostRoundModal
+              round={{ round_number: round.round_number, wild_joker: round.wild_joker }}
+              players={players}
+              roundPlayers={roundPlayers}
+              userId={user?.id}
+              isAdmin={isAdmin}
+              onlinePlayerIds={onlinePlayerIds}
+              scoreHistory={scoreHistory}
+              onStartNextRound={() => startNewRound(round.round_number + 1)}
+              me={me}
+              activeLeaveShareVote={activeLeaveShareVote}
+              activeQuitVote={activeQuitVote}
+              activePauseVote={activePauseVote}
+              onInitiateLeaveShareVote={initiateLeaveShareVote}
+              onInitiateMutualQuit={initiateMutualQuit}
+              onInitiatePause={initiatePauseVote}
+              ScoreTrendChart={ScoreTrendChart}
+              isChartVisible={isChartVisible}
+              onToggleChart={() => setIsChartVisible(!isChartVisible)}
+              myHand={myHand}
+              onReorderHand={setMyHand}
+              rowSizes={rowSizes}
+              onRowSizesChange={setRowSizes}
+              isMatchFinished={isMatchOver}
+              onViewSettlement={() => setDismissedPostRoundForSettlement(true)}
+            />
+          )}
+
+          {/* 4. GAME ENDED / PAYMENT SETTLEMENT STATE */}
+          {(room.status === "finished" || isMatchOver) && (
+        <div
+          className="flex-1 overflow-y-auto w-full flex flex-col justify-start md:justify-center items-center p-3 sm:p-6"
+          style={{
+            background: "radial-gradient(ellipse 100% 70% at 50% 10%, #0d3b20 0%, #072213 55%, #030e07 100%)",
+          }}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-4xl p-4 sm:p-6 rounded-2xl bg-black/50 border border-amber-500/30 shadow-[0_0_50px_rgba(0,0,0,0.8)] backdrop-blur-xl max-h-[92dvh] overflow-y-auto"
+          >
+            {/* Header */}
+            <div className="text-center mb-6 pb-4 border-b border-white/10">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center mx-auto mb-2 shadow-[0_0_20px_rgba(245,166,35,0.3)]">
+                <Trophy className="w-7 h-7 text-amber-400 animate-pulse" />
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-black font-[Outfit] text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-amber-400 to-amber-100">
+                Match Finished!
+              </h2>
+              <p className="text-xs sm:text-sm text-white/60 mt-1">
+                Final standings, score history, and bet settlements (₹{room.bet_amount} Bet).
+              </p>
+              {round && round.status === "completed" && (
+                <div className="mt-3 flex justify-center">
+                  <button
+                    onClick={() => setDismissedPostRoundForSettlement(false)}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-xs font-bold text-amber-300 flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Review Final Round Hand & Melds</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6">
+              {/* Left Column: Final Standings & Score Chart */}
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-xs font-black text-amber-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                    <Trophy className="w-3.5 h-3.5 text-amber-400" /> Final Leaderboard
+                  </h3>
+                  <div className="space-y-2">
+                    {players.map((p, idx) => (
+                      <div
+                        key={p.id}
+                        className={`p-3 rounded-xl flex justify-between items-center border ${idx === 0
+                            ? "bg-amber-500/10 border-amber-500/30"
+                            : "bg-white/5 border-white/10"
+                          }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className={`w-5 h-5 rounded-full text-[11px] font-black flex items-center justify-center ${idx === 0
+                                ? "bg-amber-400 text-black font-black"
+                                : "bg-white/10 text-white/60"
+                              }`}
+                          >
+                            {idx === 0 ? "🏆" : idx + 1}
+                          </span>
+                          <div>
+                            <span className="text-xs sm:text-sm font-bold text-white">
+                              {p.name} {p.player_id === user?.id && "(You)"}
+                            </span>
+                            {(p.status === "disconnected" ||
+                              (p.player_id !== user?.id && !onlinePlayerIds.includes(p.player_id))) && (
+                                <span className="ml-1.5 text-[9px] bg-red-500/10 text-red-400 border border-red-500/30 px-1 rounded animate-pulse">
+                                  OFFLINE
+                                </span>
+                              )}
+                          </div>
+                        </div>
+                        <span className="font-mono text-xs sm:text-sm font-bold text-amber-400">
+                          {p.total_score} pts
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Score Trend Chart */}
+                {scoreHistory.length > 1 && (
+                  <div className="p-3 rounded-xl bg-black/40 border border-white/10">
+                    <button
+                      onClick={() => setIsChartVisible(!isChartVisible)}
+                      className="w-full flex justify-between items-center text-xs font-bold text-white/60 hover:text-white uppercase tracking-wider"
+                    >
+                      <span>Score Trend Progress</span>
+                      <span className="text-[10px] bg-white/10 px-2 py-0.5 rounded border border-white/10">
+                        {isChartVisible ? "Hide Chart" : "Show Chart"}
+                      </span>
+                    </button>
+                    {isChartVisible && (
+                      <div className="mt-3 pt-3 border-t border-white/5">
+                        <ScoreTrendChart scoreHistory={scoreHistory} players={players} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Right Column: Payments & Settlements */}
+              <div>
+                <h3 className="text-xs font-black text-emerald-300 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5 text-emerald-400" /> Bet Settlements (₹{room.bet_amount} Bet)
+                </h3>
+                <div className="space-y-2.5">
+                  {payments.length === 0 ? (
+                    <div className="p-6 rounded-xl bg-white/5 border border-dashed border-white/10 text-center text-xs text-white/50">
+                      No payments required (e.g. mutual quit split or everyone opted into leave share).
+                    </div>
+                  ) : (
+                    payments.map((pay) => {
+                      const payer = players.find((p) => p.player_id === pay.payer_id);
+                      const payee = players.find((p) => p.player_id === pay.payee_id);
+                      const isPayerMe = pay.payer_id === user?.id;
+                      const isPayeeMe = pay.payee_id === user?.id;
+                      const payeeUpi = payee?.upi_id || "";
+
+                      return (
+                        <div
+                          key={pay.id}
+                          className={`p-3.5 rounded-xl border flex justify-between items-center bg-black/40 ${pay.status === "completed"
+                              ? "border-emerald-500/20 opacity-70"
+                              : "border-white/10"
+                            }`}
+                        >
+                          <div className="text-xs">
+                            <div className="font-bold text-sm text-white">
+                              {payer?.name} → {payee?.name}
+                            </div>
+                            <div className="text-white/50 mt-1 font-mono text-[11px]">
+                              Amount: <span className="font-bold text-amber-400">₹{pay.amount}</span> | Status:{" "}
+                              <span
+                                className={
+                                  pay.status === "completed"
+                                    ? "text-emerald-400 font-bold"
+                                    : pay.status === "paid"
+                                      ? "text-amber-400 font-bold"
+                                      : "text-slate-400"
+                                }
+                              >
+                                {pay.status === "completed"
+                                  ? "SETTLED"
+                                  : pay.status === "paid"
+                                    ? "AWAITING CONFIRMATION"
+                                    : "PENDING"}
+                              </span>
+                            </div>
+                            {pay.status !== "completed" && (
+                              <div className="text-white/60 mt-1 font-mono text-[11px]">
+                                {payeeUpi ? (
+                                  <>
+                                    UPI ID:{" "}
+                                    <button
+                                      type="button"
+                                      onClick={() => copyToClipboard(payeeUpi)}
+                                      className="font-bold text-emerald-400 hover:text-emerald-300 underline cursor-pointer focus:outline-none"
+                                      title="Click to copy"
+                                    >
+                                      {payeeUpi}
+                                    </button>
+                                  </>
+                                ) : (
+                                  <span className="text-white/30 italic">UPI ID not provided</span>
+                                )}
+                              </div>
                             )}
                           </div>
-                        )}
-                      </div>
 
-                      {/* Pay/Confirm/Decline Actions */}
-                      <div>
-                        {pay.status !== "completed" && (
-                          <div className="flex flex-col sm:flex-row gap-2 items-end sm:items-center">
-                            {/* Payer view */}
-                            {isPayerMe && (
-                              <>
-                                {pay.status === "pending" && (
-                                  <button
-                                    onClick={() => handleMarkAsPaid(pay.id)}
-                                    className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
-                                  >
-                                    Mark as Paid
-                                  </button>
+                          {/* Pay/Confirm/Decline Actions */}
+                          <div>
+                            {pay.status !== "completed" && (
+                              <div className="flex flex-col sm:flex-row gap-2 items-end sm:items-center">
+                                {isPayerMe && (
+                                  <>
+                                    {pay.status === "pending" && (
+                                      <button
+                                        onClick={() => handleMarkAsPaid(pay.id)}
+                                        className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                                      >
+                                        Mark as Paid
+                                      </button>
+                                    )}
+                                    {pay.status === "paid" && (
+                                      <span className="px-3 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                        Awaiting Confirm
+                                      </span>
+                                    )}
+                                  </>
                                 )}
-                                {pay.status === "paid" && (
-                                  <span className="px-3 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                                    Awaiting Confirm
+
+                                {isPayeeMe && (
+                                  <>
+                                    {pay.status === "pending" && (
+                                      <span className="text-[10px] text-white/40 italic">
+                                        Awaiting payment
+                                      </span>
+                                    )}
+                                    {pay.status === "paid" && (
+                                      <div className="flex gap-1.5">
+                                        <button
+                                          onClick={() => handleConfirmPayment(pay.id)}
+                                          className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
+                                        >
+                                          Confirm Recv
+                                        </button>
+                                        <button
+                                          onClick={() => handleRejectPayment(pay.id)}
+                                          className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white shadow-md transition-colors"
+                                        >
+                                          Not Received
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+
+                                {!isPayerMe && !isPayeeMe && (
+                                  <span className="text-[10px] text-white/40 italic">
+                                    {pay.status === "pending" ? "Awaiting payment" : "Awaiting confirmation"}
                                   </span>
                                 )}
-                              </>
+                              </div>
                             )}
-
-                            {/* Payee view */}
-                            {isPayeeMe && (
-                              <>
-                                {pay.status === "pending" && (
-                                  <span className="text-[10px] text-[var(--color-text-muted)] italic">
-                                    Awaiting payment
-                                  </span>
-                                )}
-                                {pay.status === "paid" && (
-                                  <div className="flex gap-1.5">
-                                    <button
-                                      onClick={() => handleConfirmPayment(pay.id)}
-                                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-colors"
-                                    >
-                                      Confirm Recv
-                                    </button>
-                                    <button
-                                      onClick={() => handleRejectPayment(pay.id)}
-                                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white shadow-md transition-colors"
-                                    >
-                                      Not Received
-                                    </button>
-                                  </div>
-                                )}
-                              </>
-                            )}
-
-                            {/* Spectator view */}
-                            {!isPayerMe && !isPayeeMe && (
-                              <span className="text-[10px] text-[var(--color-text-muted)] italic">
-                                {pay.status === "pending" ? "Awaiting payment" : "Awaiting confirmation"}
+                            {pay.status === "completed" && (
+                              <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
+                                <Check className="w-4 h-4" /> Settled
                               </span>
                             )}
                           </div>
-                        )}
-                        {pay.status === "completed" && (
-                          <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
-                            <Check className="w-4 h-4" /> Settled
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
             </div>
 
             <Link
               to="/dashboard"
-              className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm block text-center"
+              onClick={() => {
+                unlockOrientation().catch(() => {});
+              }}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-600 via-amber-500 to-amber-600 hover:from-amber-500 hover:to-amber-400 text-black font-black text-sm block text-center shadow-lg uppercase tracking-wider transition-all"
             >
               Back to Dashboard
             </Link>
           </motion.div>
         </div>
       )}
+    </div>
+  )}
 
-      {/* SHOW DECLARE CONFIRMATION MODAL */}
-      <AnimatePresence>
-        {showCardToConfirm && (
-          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-[250] p-4 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="w-full max-w-sm p-6 rounded-2xl bg-[#0D1B2A]/95 border border-emerald-500/30 shadow-[0_0_50px_rgba(16,185,129,0.15)] flex flex-col items-center text-center"
-            >
-              <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mb-4 animate-pulse">
-                <Trophy className="w-6 h-6" />
-              </div>
 
-              <h3 className="text-xl font-bold font-[Outfit] text-white mb-2">
-                Declare Show
-              </h3>
-
-              <p className="text-sm text-[var(--color-text-secondary)] mb-6 max-w-[280px]">
-                Are you sure you want to use this card to declare a show? Your remaining 13 cards will be validated.
-              </p>
-
-              {/* Card Preview */}
-              <div className="mb-6 flex justify-center scale-110">
-                <PlayingCard card={showCardToConfirm} size="lg" faceDown={false} />
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex gap-3 w-full">
-                <button
-                  onClick={() => setShowCardToConfirm(null)}
-                  className="flex-1 py-3 rounded-xl text-sm font-semibold bg-white/5 border border-white/10 text-white/70 hover:bg-white/10 hover:text-white transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    const card = showCardToConfirm;
-                    setShowCardToConfirm(null);
-                    executeDeclareShow(card);
-                  }}
-                  className="flex-1 py-3 rounded-xl text-sm font-bold bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white shadow-lg shadow-emerald-900/30 active:scale-95 transition-all"
-                >
-                  Yes, Declare
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* MUTUAL QUIT VOTING MODAL */}
       <AnimatePresence>
@@ -4125,6 +4311,57 @@ export default function RoomPage() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* 5. MOBILE / PWA PORTRAIT PROMPT OVERLAY */}
+      {isGameRunning && isPortrait && (isMobileClient || isRunningPWA) && (
+        <div className="fixed inset-0 z-[290] bg-[#07130b]/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
+          <div className="relative mb-6">
+            <div className="w-20 h-20 rounded-3xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(245,166,35,0.2)]">
+              <motion.div
+                animate={{ rotate: [0, 90, 90, 0] }}
+                transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", repeatDelay: 0.6 }}
+              >
+                <Smartphone className="w-10 h-10 text-amber-400" />
+              </motion.div>
+            </div>
+            <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center shadow-md">
+              <Sparkles className="w-3.5 h-3.5 text-black" />
+            </div>
+          </div>
+
+          <h2 className="text-xl sm:text-2xl font-black font-[Outfit] text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-amber-400 to-amber-100 mb-2">
+            Rotate to Landscape
+          </h2>
+          <p className="text-xs sm:text-sm text-white/70 max-w-xs leading-relaxed mb-6">
+            Rummy table gameplay is locked to landscape for the best card view and touch gestures. Please rotate your device sideways.
+          </p>
+
+          <div className="flex flex-col gap-3 w-full max-w-xs">
+            <button
+              onClick={async () => {
+                const locked = await lockToLandscape();
+                if (!locked) {
+                  toast.info("Please rotate your phone horizontally to continue.");
+                }
+              }}
+              className="w-full py-3 px-4 rounded-xl font-black text-sm bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-black shadow-lg shadow-amber-950/50 hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Smartphone className="w-4 h-4 rotate-90" />
+              <span>Rotate to Landscape</span>
+            </button>
+
+            <button
+              onClick={async () => {
+                await unlockOrientation();
+                window.location.href = "/dashboard";
+              }}
+              className="w-full py-2.5 px-4 rounded-xl font-bold text-xs bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all cursor-pointer"
+            >
+              Exit to Dashboard
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

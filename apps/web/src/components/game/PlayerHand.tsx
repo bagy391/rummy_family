@@ -72,8 +72,8 @@ export default function PlayerHand({
   myAvatarUrl,
   onDrawCard,
 }: PlayerHandProps) {
-  const canDrop = isMyTurn && !hasDrawnThisTurn;
-  const canDiscard = isMyTurn && hasDrawnThisTurn;
+  const canDrop = isMyTurn && !hasDrawnThisTurn && !isSpectator;
+  const canDiscard = isMyTurn && hasDrawnThisTurn && !isSpectator;
   const showFirstDrop = canDrop && turnOrderIndex < playerCount && (myTotalScore + 20) < 250;
   const showSecondDrop = canDrop && turnOrderIndex >= playerCount && (myTotalScore + 40) < 250;
 

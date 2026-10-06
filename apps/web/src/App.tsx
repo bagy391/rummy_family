@@ -76,8 +76,11 @@ export default function App() {
             setUser(null);
           }
         } else {
-          setUser(null);
-          setSession(null);
+          // If offline on app start, don't clear cached user; allow offline cache to show
+          if (navigator.onLine) {
+            setUser(null);
+            setSession(null);
+          }
         }
       } catch (err) {
         console.error("Initial auth check failed:", err);
