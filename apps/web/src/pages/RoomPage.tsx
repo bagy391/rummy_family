@@ -21,7 +21,7 @@ import PlayingCard from "@/components/game/PlayingCard";
 import { decodeCleanUTF8 } from "@/lib/utils";
 import { useVoiceChat, uidFromUserId } from "@/lib/useVoiceChat";
 import VoicePanel from "@/components/game/VoicePanel";
-import { lockToLandscape, unlockOrientation, useOrientation } from "@/lib/orientation";
+import { lockToLandscape, unlockOrientation } from "@/lib/orientation";
 
 
 interface Room {
@@ -128,11 +128,11 @@ export default function RoomPage() {
   useEffect(() => {
     const handleOnline = () => {
       setIsBrowserOnline(true);
-      toast.success("Internet connection restored!");
+      console.log("Internet connection restored");
     };
     const handleOffline = () => {
       setIsBrowserOnline(false);
-      toast.error("Internet connection lost!");
+      console.log("Internet connection lost");
     };
 
     window.addEventListener("online", handleOnline);
@@ -143,9 +143,6 @@ export default function RoomPage() {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
-
-  // Dynamic orientation tracking for mobile and installed PWA
-  const { isPortrait, isPWA: isRunningPWA, isMobile: isMobileClient } = useOrientation();
 
   // Active game lifecycle (from round 1 start through match settlements)
   const isGameRunning = room?.status === "active" || room?.status === "finished";
@@ -205,6 +202,7 @@ export default function RoomPage() {
   const [myHand, setMyHand] = useState<Card[]>([]);
   const [rowSizes, setRowSizes] = useState<{ id: string; size: number }[]>([]);
   const [selectedCards, setSelectedCards] = useState<string[]>([]); // card IDs
+  const [justDrawnCardId, setJustDrawnCardId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [nowTime, setNowTime] = useState(new Date().getTime());
   const [showCardToConfirm, setShowCardToConfirm] = useState<Card | null>(null);
@@ -384,6 +382,13 @@ export default function RoomPage() {
     }
     prevIsMyTurnRef.current = isNowMyTurn;
   }, [isMyTurn, round?.status]);
+
+  // Clear newly drawn card highlight when turn ends or before card has been drawn
+  useEffect(() => {
+    if (!myRoundState?.has_drawn_this_turn || !isMyTurn) {
+      setJustDrawnCardId(null);
+    }
+  }, [myRoundState?.has_drawn_this_turn, isMyTurn]);
 
   const [dismissedPostRoundForSettlement, setDismissedPostRoundForSettlement] = useState(false);
 
@@ -958,7 +963,7 @@ export default function RoomPage() {
           const amIAdmin = currentMe?.is_admin || false;
 
           if (amIAdmin) {
-            toast.info(`Player ${roomPlayer.name} timed out. Auto-dropping...`);
+            console.log(`Player ${roomPlayer.name} timed out. Auto-dropping...`);
             await autoDropPlayer(rp.player_id);
           }
         }
@@ -970,7 +975,7 @@ export default function RoomPage() {
 
   // Sync hand when own hand changes, preserving user's manual sorting order
   useEffect(() => {
-    if (myRoundState?.hand) {
+    if (myRoundState?.hand && myRoundState.hand.length > 0) {
       const handCardIds = myRoundState.hand.map(c => c.id);
       const myHandIds = myHand.map(c => c.id);
 
@@ -983,12 +988,19 @@ export default function RoomPage() {
         const preservedHandIds = preservedHand.map(c => c.id);
         const newCards = myRoundState.hand.filter(c => !preservedHandIds.includes(c.id));
 
-        setMyHand([...preservedHand, ...newCards]);
+        const updatedHand = [...preservedHand, ...newCards];
+        // If local hand has a drawn card that server hasn't reflected yet, preserve it
+        if (myRoundState.has_drawn_this_turn && myHand.length > updatedHand.length) {
+          const missingLocalCards = myHand.filter(c => !updatedHand.some(uh => uh.id === c.id));
+          setMyHand([...updatedHand, ...missingLocalCards]);
+        } else {
+          setMyHand(updatedHand);
+        }
       }
-    } else {
+    } else if (round?.status === "completed" || room?.status === "finished") {
       setMyHand([]);
     }
-  }, [myRoundState?.hand]);
+  }, [myRoundState?.hand, myRoundState?.has_drawn_this_turn, round?.status, room?.status]);
 
   // Helper fetches
   async function fetchPlayers(roomId: string) {
@@ -1096,8 +1108,12 @@ export default function RoomPage() {
 
       if (metaData) {
         const merged = metaData.map(p => {
-          if (p.player_id === user?.id && ownData) {
-            return { ...p, hand: ownData.hand || [] };
+          if (p.player_id === user?.id) {
+            if (ownData && Array.isArray(ownData.hand) && ownData.hand.length > 0) {
+              return { ...p, hand: ownData.hand };
+            }
+            const existingRp = roundPlayersRef.current.find(rp => rp.player_id === user?.id);
+            return { ...p, hand: existingRp?.hand || [] };
           }
           return { ...p, hand: [] };
         });
@@ -1512,7 +1528,7 @@ export default function RoomPage() {
           .eq("id", currentRound.id);
       }
 
-      toast.success(`Player auto-dropped due to timeout.`);
+      console.log(`Player auto-dropped due to timeout.`);
       await fetchPlayers(room!.id);
       await fetchRoundPlayers(currentRound.id);
     } catch (err) {
@@ -1654,7 +1670,7 @@ export default function RoomPage() {
         event_data: { roundNumber, wildJoker: wildJokerInfo },
       });
 
-      toast.success(`Round ${roundNumber} started!`);
+      console.log(`Round ${roundNumber} started!`);
     } catch (err: any) {
       toast.error(err.message || "Failed to start round");
     }
@@ -1674,7 +1690,26 @@ export default function RoomPage() {
       if (error) throw error;
       gameAudio.playDraw();
       gameAudio.triggerHapticDraw();
-      toast.success(`Drawn card: ${data.rank} of ${data.suit}`);
+      console.log("Card drawn from deck:", data);
+
+      if (data && data.id) {
+        setJustDrawnCardId(data.id);
+        // Instant local update to hand so card is NEVER missing or stuck
+        setMyHand((prev) => (prev.some((c) => c.id === data.id) ? prev : [...prev, data]));
+        setRoundPlayers((prev) =>
+          prev.map((rp) =>
+            rp.player_id === user?.id
+              ? {
+                  ...rp,
+                  has_drawn_this_turn: true,
+                  hand: rp.hand && rp.hand.some((c) => c.id === data.id) ? rp.hand : [...(rp.hand || []), data],
+                }
+              : rp
+          )
+        );
+      }
+
+      fetchRoundPlayers(round.id).catch(() => {});
     } catch (err: any) {
       toast.error(err.message || "Draw card failed");
     } finally {
@@ -1687,7 +1722,7 @@ export default function RoomPage() {
     setLoadingAction(true);
 
     try {
-      const { error } = await supabase.rpc("pick_card_from_discard", {
+      const { data, error } = await supabase.rpc("pick_card_from_discard", {
         p_round_id: round.id,
         p_player_id: user?.id,
       });
@@ -1695,7 +1730,35 @@ export default function RoomPage() {
       if (error) throw error;
       gameAudio.playDraw();
       gameAudio.triggerHapticDraw();
-      toast.success("Picked discard card");
+
+      const pickedCard = (data && data.id) ? data : (round.discard_pile && round.discard_pile.length > 0 ? round.discard_pile[round.discard_pile.length - 1] : null);
+      console.log("Card picked from discard:", pickedCard);
+
+      if (pickedCard && pickedCard.id) {
+        setJustDrawnCardId(pickedCard.id);
+        setMyHand((prev) => (prev.some((c) => c.id === pickedCard.id) ? prev : [...prev, pickedCard]));
+        setRoundPlayers((prev) =>
+          prev.map((rp) =>
+            rp.player_id === user?.id
+              ? {
+                  ...rp,
+                  has_drawn_this_turn: true,
+                  hand: rp.hand && rp.hand.some((c) => c.id === pickedCard.id) ? rp.hand : [...(rp.hand || []), pickedCard],
+                }
+              : rp
+          )
+        );
+        setRound((prev) => {
+          if (!prev) return prev;
+          const currentDiscard = prev.discard_pile || [];
+          return {
+            ...prev,
+            discard_pile: currentDiscard.length > 0 ? currentDiscard.slice(0, currentDiscard.length - 1) : currentDiscard,
+          };
+        });
+      }
+
+      fetchRoundPlayers(round.id).catch(() => {});
     } catch (err: any) {
       toast.error(err.message || "Pick card failed");
     } finally {
@@ -1705,6 +1768,8 @@ export default function RoomPage() {
 
   const handleDiscardCard = async (card: Card) => {
     if (!round || !isMyTurn || isSpectator || myRoundState?.status !== "active" || !myRoundState?.has_drawn_this_turn) return;
+
+    setJustDrawnCardId(null);
 
     // 1. Snapshot previous state for rollback on failure
     const prevHand = [...myHand];
@@ -1745,7 +1810,7 @@ export default function RoomPage() {
       });
 
       if (error) throw error;
-      toast.success("Card discarded");
+      console.log("Card discarded:", card);
     } catch (err: any) {
       // Rollback on failure
       setMyHand(prevHand);
@@ -1823,6 +1888,7 @@ export default function RoomPage() {
 
   const executeDeclareShow = async (showCard: Card) => {
     if (!round || !isMyTurn || !myRoundState?.has_drawn_this_turn || !round.wild_joker) return;
+    setJustDrawnCardId(null);
     setLoadingAction(true);
 
     // Filter show card from the hand
@@ -2172,7 +2238,7 @@ export default function RoomPage() {
       await fetchRoundPlayers(activeRound.id, "completed");
       await fetchScoreHistory(room.id);
 
-      toast.info("Round scores computed and scoreboard updated!");
+      console.log("Round scores computed and scoreboard updated!");
     } catch (err) {
       console.error("Scoring submission failed:", err);
       submittedRoundScoresRef.current.delete(activeRound.id);
@@ -3489,6 +3555,7 @@ export default function RoomPage() {
                 selectedCards={selectedCards}
                 myTotalScore={me?.total_score ?? 0}
                 hasDrawnThisTurn={myRoundState?.has_drawn_this_turn ?? false}
+                justDrawnCardId={justDrawnCardId}
                 onQuit={handleQuitGame}
                 onDrawCard={handleDrawCard}
                 onPickDiscard={handlePickDiscard}
@@ -4311,57 +4378,6 @@ export default function RoomPage() {
           </div>
         )}
       </AnimatePresence>
-
-      {/* 5. MOBILE / PWA PORTRAIT PROMPT OVERLAY */}
-      {isGameRunning && isPortrait && (isMobileClient || isRunningPWA) && (
-        <div className="fixed inset-0 z-[290] bg-[#07130b]/95 backdrop-blur-xl flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
-          <div className="relative mb-6">
-            <div className="w-20 h-20 rounded-3xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(245,166,35,0.2)]">
-              <motion.div
-                animate={{ rotate: [0, 90, 90, 0] }}
-                transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", repeatDelay: 0.6 }}
-              >
-                <Smartphone className="w-10 h-10 text-amber-400" />
-              </motion.div>
-            </div>
-            <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 flex items-center justify-center shadow-md">
-              <Sparkles className="w-3.5 h-3.5 text-black" />
-            </div>
-          </div>
-
-          <h2 className="text-xl sm:text-2xl font-black font-[Outfit] text-transparent bg-clip-text bg-gradient-to-r from-amber-200 via-amber-400 to-amber-100 mb-2">
-            Rotate to Landscape
-          </h2>
-          <p className="text-xs sm:text-sm text-white/70 max-w-xs leading-relaxed mb-6">
-            Rummy table gameplay is locked to landscape for the best card view and touch gestures. Please rotate your device sideways.
-          </p>
-
-          <div className="flex flex-col gap-3 w-full max-w-xs">
-            <button
-              onClick={async () => {
-                const locked = await lockToLandscape();
-                if (!locked) {
-                  toast.info("Please rotate your phone horizontally to continue.");
-                }
-              }}
-              className="w-full py-3 px-4 rounded-xl font-black text-sm bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 text-black shadow-lg shadow-amber-950/50 hover:brightness-110 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              <Smartphone className="w-4 h-4 rotate-90" />
-              <span>Rotate to Landscape</span>
-            </button>
-
-            <button
-              onClick={async () => {
-                await unlockOrientation();
-                window.location.href = "/dashboard";
-              }}
-              className="w-full py-2.5 px-4 rounded-xl font-bold text-xs bg-white/5 border border-white/10 text-white/60 hover:text-white transition-all cursor-pointer"
-            >
-              Exit to Dashboard
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

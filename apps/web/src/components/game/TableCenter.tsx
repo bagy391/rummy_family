@@ -46,6 +46,7 @@ interface TableCenterProps {
   boardOnly?: boolean;
 
   voiceContent?: React.ReactNode;
+  justDrawnCardId?: string | null;
 }
 
 /* ─── Row-size healing helper ─── */
@@ -82,6 +83,7 @@ function HandCardItem({
   card,
   isSelected,
   isHoverTarget,
+  isJustDrawn = false,
   cardIdx,
   dynamicMarginLeft,
   onCardClick,
@@ -93,6 +95,7 @@ function HandCardItem({
   card: Card;
   isSelected: boolean;
   isHoverTarget: boolean;
+  isJustDrawn?: boolean;
   cardIdx: number;
   dynamicMarginLeft?: number;
   onCardClick: () => void;
@@ -176,15 +179,15 @@ function HandCardItem({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       animate={{
-        y: isDragging ? offset.y : isSelected ? -16 : 0,
+        y: isDragging ? offset.y : isSelected ? -16 : isJustDrawn ? -8 : 0,
         x: isDragging ? offset.x : 0,
         scale: isDragging ? 1.18 : 1,
         rotateZ: isDragging ? 4 : 0,
       }}
       style={{
-        zIndex: isDragging ? 999999 : isSelected ? 80 : 10 + cardIdx,
+        zIndex: isDragging ? 999999 : isSelected ? 80 : isJustDrawn ? 60 : 10 + cardIdx,
         opacity: 1,
-        boxShadow: isDragging ? '0 16px 36px rgba(0,0,0,0.8), 0 0 24px rgba(245,166,35,0.6)' : undefined,
+        boxShadow: isDragging ? '0 16px 36px rgba(0,0,0,0.8), 0 0 24px rgba(245,166,35,0.6)' : isJustDrawn ? '0 0 16px 4px rgba(245,166,35,0.45)' : undefined,
         touchAction: "none",
         marginLeft: cardIdx > 0
           ? dynamicMarginLeft !== undefined
@@ -192,7 +195,7 @@ function HandCardItem({
             : "var(--card-neg-margin)"
           : undefined,
       }}
-      whileHover={isDragging ? undefined : { y: isSelected ? -20 : -8, scale: 1.03, zIndex: 90 }}
+      whileHover={isDragging ? undefined : { y: isSelected ? -20 : isJustDrawn ? -12 : -8, scale: 1.03, zIndex: 90 }}
       whileTap={isDragging ? undefined : { scale: 0.96 }}
       transition={isDragging ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 26 }}
       className={`relative cursor-grab active:cursor-grabbing select-none shrink-0 ${isHoverTarget ? "ring-2 ring-emerald-400 rounded-[8px]" : ""
@@ -203,6 +206,7 @@ function HandCardItem({
         size="lg"
         selected={isSelected}
         isWildJoker={isWild}
+        isJustDrawn={isJustDrawn}
       />
     </motion.div>
   );
@@ -243,6 +247,7 @@ export default function TableCenter({
   onRowSizesChange,
   boardOnly = false,
   voiceContent,
+  justDrawnCardId = null,
 }: TableCenterProps) {
   const canDraw = isMyTurn && !hasDrawnThisTurn && !isSpectator;
   const canDiscard = isMyTurn && hasDrawnThisTurn && !isSpectator;
@@ -501,6 +506,7 @@ export default function TableCenter({
                   key={card.id}
                   card={card}
                   isSelected={selectedCards.includes(card.id)}
+                  isJustDrawn={justDrawnCardId === card.id && hasDrawnThisTurn}
                   isHoverTarget={hoveredSlotIdx === idx && activeDragIdx !== idx}
                   cardIdx={idx}
                   onCardClick={() => onCardClick(card.id)}
@@ -917,12 +923,14 @@ export default function TableCenter({
           >
             {myHand.map((card, idx) => {
               const sel = selectedCards.includes(card.id);
+              const isJustDrawn = justDrawnCardId === card.id && hasDrawnThisTurn;
 
               return (
                 <HandCardItem
                   key={card.id}
                   card={card}
                   isSelected={sel}
+                  isJustDrawn={isJustDrawn}
                   isHoverTarget={hoveredSlotIdx === idx && activeDragIdx !== idx}
                   cardIdx={idx}
                   dynamicMarginLeft={dynamicMarginLeft}

@@ -28,6 +28,7 @@ interface PlayerHandProps {
   myName: string;
   myAvatarUrl?: string | null;
   onDrawCard: () => void;
+  justDrawnCardId?: string | null;
 }
 
 // Vector Jester illustration for hand Joker cards
@@ -71,6 +72,7 @@ export default function PlayerHand({
   myName,
   myAvatarUrl,
   onDrawCard,
+  justDrawnCardId,
 }: PlayerHandProps) {
   const canDrop = isMyTurn && !hasDrawnThisTurn && !isSpectator;
   const canDiscard = isMyTurn && hasDrawnThisTurn && !isSpectator;
@@ -166,6 +168,7 @@ export default function PlayerHand({
           >
             {myHand.map((card, cardIdx) => {
               const isSelected = selectedCards.includes(card.id);
+              const isJustDrawn = justDrawnCardId === card.id && hasDrawnThisTurn;
               const globalCardIndex = cardIdx;
               const suitColor = cardSuitColor(card.suit);
               const symbol = cardSuitSymbol(card.suit);
@@ -180,7 +183,7 @@ export default function PlayerHand({
                   id={`card-hand-${card.id}`}
                   data-card-idx={cardIdx}
                   dragListener={!isSpectator}
-                  style={{ zIndex: cardIdx }}
+                  style={{ zIndex: isJustDrawn ? 60 : cardIdx }}
                   initial={
                     roundStatus === "dealing"
                       ? { opacity: 0, scale: 0.6, x: 0, y: -150 }
@@ -189,13 +192,15 @@ export default function PlayerHand({
                   animate={{
                     opacity: 1,
                     scale: 1,
-                    y: isSelected ? -10 : 0,
+                    y: isSelected ? -10 : isJustDrawn ? -6 : 0,
                     boxShadow: isSelected
                       ? "0 0 12px 4px rgba(245, 166, 35, 0.45)"
+                      : isJustDrawn
+                      ? "0 0 14px 4px rgba(245, 166, 35, 0.55)"
                       : "0 2px 4px rgba(0, 0, 0, 0.15)",
                   }}
                   whileHover={{
-                    y: isSelected ? -14 : -5,
+                    y: isSelected ? -14 : isJustDrawn ? -10 : -5,
                     scale: 1.01,
                     zIndex: 50,
                   }}
@@ -212,6 +217,8 @@ export default function PlayerHand({
                   }}
                   className={`w-[clamp(66px,16vw,80px)] h-[clamp(98px,23.8vw,120px)] rounded-md bg-white border text-black cursor-pointer shrink-0 relative overflow-hidden hand-card ${isSelected
                       ? "ring-2 ring-[var(--color-gold)] border-[var(--color-gold)]"
+                      : isJustDrawn
+                      ? "ring-2 ring-amber-400 border-amber-300"
                       : "border-gray-200"
                     }`}
                 >
@@ -230,6 +237,12 @@ export default function PlayerHand({
                         : undefined
                     }
                   >
+                    {isJustDrawn && !isSelected && (
+                      <div className="absolute top-0.5 right-0.5 z-30 px-1 py-0.5 rounded bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-black text-[7px] font-black uppercase tracking-wider shadow-md pointer-events-none flex items-center gap-0.5 border border-amber-500/40 animate-pulse">
+                        <span className="w-1 h-1 rounded-full bg-emerald-600 animate-ping" />
+                        <span>PICKED</span>
+                      </div>
+                    )}
                     {isCardJoker ? (
                       <div className="w-full h-full flex flex-col justify-between select-none relative">
                         {/* JOKER vertical stack */}

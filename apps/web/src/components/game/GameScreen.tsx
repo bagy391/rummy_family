@@ -57,6 +57,7 @@ interface GameScreenProps {
   selectedCards: string[];
   myTotalScore: number;
   hasDrawnThisTurn: boolean;
+  justDrawnCardId?: string | null;
 
   // Actions
   onQuit: () => void;
@@ -132,6 +133,7 @@ export default function GameScreen({
   rowSizes,
   onRowSizesChange,
   voiceContent,
+  justDrawnCardId,
 }: GameScreenProps) {
 
   const opponents = players.filter(
@@ -213,6 +215,7 @@ export default function GameScreen({
         rowSizes={rowSizes}
         onRowSizesChange={onRowSizesChange}
         voiceContent={voiceContent}
+        justDrawnCardId={justDrawnCardId}
       />
 
       {/* Chat FAB (Bottom-Right corner beside player hand) */}

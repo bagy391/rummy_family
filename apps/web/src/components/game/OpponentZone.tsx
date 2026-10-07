@@ -1,6 +1,6 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ShieldAlert, Wifi, WifiOff, RotateCcw, Move } from "lucide-react";
+import { X, ShieldAlert, Wifi, WifiOff, Move } from "lucide-react";
 
 interface FloatingEmoji {
   id: string;
@@ -272,15 +272,6 @@ export default function OpponentZone({
     activeDragOppRef.current = null;
   };
 
-  const handleResetPositions = useCallback(() => {
-    setCustomOffsets({});
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch { }
-  }, []);
-
-  const hasCustomPositions = Object.keys(customOffsets).length > 0;
-
   const selectedOpp = opponents.find((o) => o.id === selectedOppId);
   const selectedOppRp = selectedOpp
     ? roundPlayers.find((p) => p.player_id === selectedOpp.player_id)
@@ -291,26 +282,6 @@ export default function OpponentZone({
       ref={containerRef}
       className="absolute inset-0 pointer-events-none z-20 select-none overflow-hidden"
     >
-      {/* Subtle Reset Positions Pill (Visible whenever user has repositioned any ring) */}
-      <AnimatePresence>
-        {hasCustomPositions && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="absolute top-2.5 right-14 z-30 pointer-events-auto"
-          >
-            <button
-              onClick={handleResetPositions}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/60 hover:bg-black/85 border border-amber-500/30 hover:border-amber-400 text-[9.5px] font-bold text-amber-300 hover:text-amber-200 shadow-lg backdrop-blur-md transition-all cursor-pointer"
-              title="Reset player ring positions to default layout"
-            >
-              <RotateCcw className="w-3 h-3 text-amber-400" />
-              <span>Reset Seats</span>
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Opponent Rings */}
       {opponents.map((opp, index) => {

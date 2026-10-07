@@ -12,6 +12,7 @@ interface PlayingCardProps {
   selected?: boolean;
   isJoker?: boolean;
   isWildJoker?: boolean;
+  isJustDrawn?: boolean;
   onClick?: () => void;
   glowColor?: string;
   className?: string;
@@ -292,6 +293,8 @@ export default function PlayingCard({
   size = "lg",
   faceDown = false,
   selected = false,
+  isWildJoker = false,
+  isJustDrawn = false,
   onClick,
   glowColor,
   className = "",
@@ -324,6 +327,8 @@ export default function PlayingCard({
 
   const borderGlow = selected
     ? "ring-2 ring-[var(--color-gold)] border-[var(--color-gold)] shadow-[0_0_18px_6px_rgba(245,166,35,0.55)]"
+    : isJustDrawn
+    ? "ring-2 ring-amber-400 border-amber-300 shadow-[0_0_16px_5px_rgba(245,166,35,0.65)]"
     : "border-gray-200/90 shadow-[0_4px_12px_rgba(0,0,0,0.4)]";
 
   return (
@@ -345,6 +350,14 @@ export default function PlayingCard({
       {/* Card shine gloss */}
       <div className="card-shine" />
 
+      {/* Picked card highlight badge */}
+      {isJustDrawn && !selected && (
+        <div className="absolute top-0.5 right-0.5 z-30 px-1 py-0.5 rounded bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 text-black text-[7px] font-black uppercase tracking-wider shadow-md pointer-events-none flex items-center gap-0.5 border border-amber-500/40 animate-pulse">
+          <span className="w-1 h-1 rounded-full bg-emerald-600 animate-ping" />
+          <span>PICKED</span>
+        </div>
+      )}
+
       {isCardPrintedJoker ? (
         <div className="w-full h-full border border-amber-400/40 rounded-[inherit] p-[2px] flex flex-col justify-start select-none relative bg-gradient-to-br from-amber-50 to-yellow-50/40 overflow-hidden">
           {/* Vertical JOKER banner */}
@@ -360,6 +373,13 @@ export default function PlayingCard({
             <span className={`${s.rank} ${suitColor} tracking-tight font-black`}>{rank}</span>
             <span className={`${s.suitSmall} font-bold leading-none ${suitColor} -mt-0.5`}>{symbol}</span>
           </div>
+
+          {/* Wild joker badge */}
+          {isWildJoker && (
+            <div className="absolute bottom-1 left-1 z-10 px-1 py-0.5 rounded-sm bg-gradient-to-r from-amber-400 to-yellow-300 text-black text-[6.5px] font-black tracking-tight shadow-sm flex items-center justify-center border border-amber-500/40">
+              ★ JOKER
+            </div>
+          )}
 
           {/* Royal Court Illustrations for J, Q, K */}
           {card.rank === Rank.KING ? (
