@@ -84,7 +84,18 @@ export default function DashboardPage() {
   const lastFetchedAt = useRef<number>(0);
 
   const fetchDashboardData = useCallback(async (isManual = false) => {
-    const currentUser = user || useAuthStore.getState().user;
+    let currentUser = user || useAuthStore.getState().user;
+
+    // Fallback: If auth store user isn't populated yet, check Supabase session directly
+    if (!currentUser?.id) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          currentUser = { id: session.user.id } as any;
+        }
+      } catch {}
+    }
+
     if (!currentUser?.id) return;
 
     if (isManual) setIsRefreshing(true);
@@ -265,22 +276,51 @@ export default function DashboardPage() {
     }
   }, [user]);
 
+  // Clear dashboard cache & reset local state
+  const handleClearCache = async () => {
+    try {
+      const uid = user?.id || useAuthStore.getState().user?.id;
+      if (uid) {
+        localStorage.removeItem(`${DASHBOARD_CACHE_KEY}${uid}`);
+      }
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(DASHBOARD_CACHE_KEY)) {
+          localStorage.removeItem(key);
+        }
+      }
+
+      setStats({ total_games_played: 0, total_wins: 0, earnings: 0, total_points: 0 });
+      setLeaderboard([]);
+      setHistory([]);
+      setActiveRooms([]);
+      setPendingPayments([]);
+
+      toast.success("Dashboard cache cleared! Fetching fresh data...");
+      await fetchDashboardData(true);
+    } catch (err) {
+      toast.error("Failed to clear cache");
+    }
+  };
+
   // Fetch on mount and when user identity changes
   useEffect(() => {
     const uid = user?.id || useAuthStore.getState().user?.id;
-    if (!uid) return;
 
     // Hydrate from cache immediately if state is empty
-    const cached = getDashboardCache(uid);
-    if (cached) {
-      if (cached.stats) setStats(cached.stats);
-      if (cached.leaderboard?.length) setLeaderboard(cached.leaderboard);
-      if (cached.history?.length) setHistory(cached.history);
-      if (cached.activeRooms?.length) setActiveRooms(cached.activeRooms);
-      if (cached.pendingPayments?.length) setPendingPayments(cached.pendingPayments);
+    if (uid) {
+      const cached = getDashboardCache(uid);
+      if (cached) {
+        if (cached.stats) setStats(cached.stats);
+        if (cached.leaderboard?.length) setLeaderboard(cached.leaderboard);
+        if (cached.history?.length) setHistory(cached.history);
+        if (cached.activeRooms?.length) setActiveRooms(cached.activeRooms);
+        if (cached.pendingPayments?.length) setPendingPayments(cached.pendingPayments);
+      }
     }
 
-    fetchDashboardData();
+    // ALWAYS hit API for live data every time landed on dashboard
+    fetchDashboardData(true);
   }, [user?.id, fetchDashboardData]);
 
   // Re-fetch when tab becomes visible, window gains focus, device reconnects online, or page restores from BFCache
@@ -433,33 +473,7 @@ export default function DashboardPage() {
     navigate("/login");
   };
 
-  const handleHardRefresh = async () => {
-    try {
-      toast.info("Clearing cache and refreshing...");
-      
-      // Unregister Service Workers
-      if ('serviceWorker' in navigator) {
-        const registrations = await navigator.serviceWorker.getRegistrations();
-        for (const registration of registrations) {
-          await registration.unregister();
-        }
-      }
-      
-      // Clear Cache Storage
-      if ('caches' in window) {
-        const keys = await caches.keys();
-        for (const key of keys) {
-          await caches.delete(key);
-        }
-      }
-      
-      // Force reload with cache busting query param
-      const cleanUrl = window.location.origin + window.location.pathname + '?cb=' + Date.now();
-      window.location.replace(cleanUrl);
-    } catch (err) {
-      window.location.reload();
-    }
-  };
+
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -634,22 +648,19 @@ export default function DashboardPage() {
           <h1 className="text-xl font-bold font-[Outfit] tracking-wide">Family Rummy</h1>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-3">
           <div className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] px-3 py-1.5 rounded-full border border-[var(--color-border-default)]">
             <User className="w-4 h-4 text-emerald-400" />
             <span>{user?.displayName}</span>
           </div>
           <button
-            onClick={() => {
-              fetchDashboardData(true);
-              toast.info("Refreshing dashboard data...");
-            }}
-            onDoubleClick={handleHardRefresh}
+            onClick={handleClearCache}
             disabled={isRefreshing}
-            className="p-2 rounded-full hover:bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors cursor-pointer"
-            title="Click to refresh data, double click to hard refresh"
+            className="px-3 py-1.5 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+            title="Clear cache and fetch fresh dashboard data from server"
           >
-            <RefreshCw className={`w-5 h-5 ${isRefreshing ? "animate-spin text-emerald-400" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+            <span>Clear Cache & Refresh</span>
           </button>
           <button 
             onClick={handleLogout}

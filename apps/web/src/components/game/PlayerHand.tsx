@@ -183,7 +183,7 @@ export default function PlayerHand({
                   id={`card-hand-${card.id}`}
                   data-card-idx={cardIdx}
                   dragListener={!isSpectator}
-                  style={{ zIndex: isJustDrawn ? 60 : cardIdx }}
+                  style={{ zIndex: isJustDrawn ? cardIdx + 2 : cardIdx }}
                   initial={
                     roundStatus === "dealing"
                       ? { opacity: 0, scale: 0.6, x: 0, y: -150 }

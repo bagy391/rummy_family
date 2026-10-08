@@ -185,7 +185,7 @@ function HandCardItem({
         rotateZ: isDragging ? 4 : 0,
       }}
       style={{
-        zIndex: isDragging ? 999999 : isSelected ? 80 : isJustDrawn ? 60 : 10 + cardIdx,
+        zIndex: isDragging ? 999999 : isSelected ? 80 : isJustDrawn ? 10 + cardIdx + 1 : 10 + cardIdx,
         opacity: 1,
         boxShadow: isDragging ? '0 16px 36px rgba(0,0,0,0.8), 0 0 24px rgba(245,166,35,0.6)' : isJustDrawn ? '0 0 16px 4px rgba(245,166,35,0.45)' : undefined,
         touchAction: "none",

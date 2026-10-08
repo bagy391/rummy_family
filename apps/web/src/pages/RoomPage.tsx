@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Trophy, ArrowLeft, Copy, Check, Info, Smartphone, Share2, Sparkles, ShieldCheck, AlertTriangle, X, Eye
+  Trophy, ArrowLeft, Copy, Check, Info, Smartphone, Share2, Sparkles, ShieldCheck, AlertTriangle, X, Eye, RotateCw
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuthStore } from "@/stores/auth-store";
@@ -21,7 +21,7 @@ import PlayingCard from "@/components/game/PlayingCard";
 import { decodeCleanUTF8 } from "@/lib/utils";
 import { useVoiceChat, uidFromUserId } from "@/lib/useVoiceChat";
 import VoicePanel from "@/components/game/VoicePanel";
-import { lockToLandscape, unlockOrientation } from "@/lib/orientation";
+import { lockToLandscape, unlockOrientation, useOrientation } from "@/lib/orientation";
 
 
 interface Room {
@@ -108,9 +108,57 @@ interface PauseVoteState {
   votes: Record<string, "agree" | "disagree" | "pending">;
 }
 
+function RotateScreenOverlay({ onRotate, onLeave }: { onRotate: () => void; onLeave: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[99999] bg-[#0B132B] flex flex-col items-center justify-center p-6 text-center select-none backdrop-blur-md">
+      {/* Background radial glow */}
+      <div className="absolute inset-0 bg-gradient-to-b from-amber-500/10 via-emerald-500/5 to-transparent pointer-events-none" />
+
+      {/* Animated phone icon rotation container */}
+      <div className="relative mb-8 flex items-center justify-center">
+        <div className="w-24 h-24 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center animate-pulse">
+          <motion.div
+            animate={{ rotate: [0, -90, 0] }}
+            transition={{ repeat: Infinity, duration: 3, ease: "easeInOut", repeatDelay: 1 }}
+            className="text-amber-400"
+          >
+            <Smartphone className="w-12 h-12" />
+          </motion.div>
+        </div>
+        <div className="absolute -bottom-2 bg-amber-500 text-black text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider shadow-lg">
+          Rotate Device
+        </div>
+      </div>
+
+      <h2 className="text-2xl font-black font-[Outfit] text-white mb-2 tracking-wide">
+        Please Rotate Your Screen
+      </h2>
+      <p className="text-sm text-slate-300 max-w-xs mb-8 leading-relaxed">
+        Family Rummy requires <span className="text-amber-400 font-bold">Landscape mode</span> for table view and card controls.
+      </p>
+
+      <div className="flex flex-col sm:flex-row gap-3 w-full max-w-xs z-10">
+        <button
+          onClick={onRotate}
+          className="w-full px-5 py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold text-sm shadow-lg shadow-amber-500/20 active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <RotateCw className="w-4 h-4" /> Rotate to Landscape
+        </button>
+        <button
+          onClick={onLeave}
+          className="w-full px-5 py-3 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-sm active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function RoomPage() {
   const { roomCode } = useParams<{ roomCode: string }>();
   const { user } = useAuthStore();
+  const { isPortrait } = useOrientation();
 
   const [room, setRoom] = useState<Room | null>(null);
   const [players, setPlayers] = useState<RoomPlayer[]>([]);
@@ -3299,6 +3347,19 @@ export default function RoomPage() {
   // Render components
   return (
     <div className="h-dvh overflow-hidden bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] safe-top safe-bottom flex flex-col">
+      {/* Landscape Orientation Prompt Overlay (when device is portrait) */}
+      {isPortrait && (
+        <RotateScreenOverlay
+          onRotate={() => {
+            lockToLandscape().catch(() => {});
+          }}
+          onLeave={() => {
+            unlockOrientation().catch(() => {});
+            window.location.href = "/dashboard";
+          }}
+        />
+      )}
+
       {/* Dynamic fullscreen connection loss overlay (only if offline or error) */}
       {(!isBrowserOnline || channelStatus === "CHANNEL_ERROR" || channelStatus === "TIMED_OUT") && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[9999] flex flex-col items-center justify-center p-6 text-center select-none pointer-events-auto">
@@ -3564,7 +3625,10 @@ export default function RoomPage() {
                 onDropFirst={() => handleDrop("FIRST")}
                 onDropSecond={() => handleDrop("SECOND")}
                 onCardClick={handleCardClick}
-                onReorderHand={setMyHand}
+                onReorderHand={(newHand) => {
+                  setJustDrawnCardId(null);
+                  setMyHand(newHand);
+                }}
                 rowSizes={rowSizes}
                 onRowSizesChange={setRowSizes}
                 onAdminKick={handleAdminKick}
